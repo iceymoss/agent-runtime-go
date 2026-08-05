@@ -3,9 +3,8 @@ package agent
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
-
-	jsoncodec "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 )
 
 // 死循环检测默认参数。服务端单轮比 CLI 会话短一个量级，
@@ -100,10 +99,10 @@ func stepSignature(s StepResult) string {
 
 func canonicalSignatureInput(input string) string {
 	var value any
-	if err := jsoncodec.Unmarshal([]byte(input), &value); err != nil {
+	if err := json.Unmarshal([]byte(input), &value); err != nil {
 		return input
 	}
-	data, err := jsoncodec.Marshal(value)
+	data, err := json.Marshal(value)
 	if err != nil {
 		return input
 	}

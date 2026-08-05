@@ -2,11 +2,11 @@ package context
 
 import (
 	stdcontext "context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/iceymoss/agent-runtime-go"
-	projectjson "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 )
 
 type summaryArtifactWire struct {
@@ -58,7 +58,7 @@ func (a SummaryArtifact) MarshalWire() ([]byte, error) {
 	if err := validateSummaryArtifact(a); err != nil {
 		return nil, err
 	}
-	return projectjson.Marshal(struct {
+	return json.Marshal(struct {
 		Ref       ArtifactRef         `json:"ref"`
 		Wire      summaryArtifactWire `json:"wire"`
 		CreatedAt time.Time           `json:"created_at"`
@@ -71,7 +71,7 @@ func UnmarshalSummaryArtifact(data []byte) (SummaryArtifact, error) {
 		Wire      summaryArtifactWire `json:"wire"`
 		CreatedAt time.Time           `json:"created_at"`
 	}
-	if err := projectjson.UnmarshalStrict(data, &envelope); err != nil {
+	if err := unmarshalStrict(data, &envelope); err != nil {
 		return SummaryArtifact{}, contextError(CodeInvalidRequest, "unmarshal_artifact", "", ErrInvalidRequest, err)
 	}
 	artifact := SummaryArtifact{

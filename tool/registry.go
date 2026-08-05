@@ -2,13 +2,13 @@ package tool
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/iceymoss/agent-runtime-go"
-	jsoncodec "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -244,7 +244,7 @@ func canonicalInput(entry registration, input string) (string, string, error) {
 		input = "{}"
 	}
 	var value any
-	if err := jsoncodec.Unmarshal([]byte(input), &value); err != nil {
+	if err := json.Unmarshal([]byte(input), &value); err != nil {
 		return "", "", lifecycleError(ErrToolInputInvalid, err, "validate", "", "input is not a JSON object")
 	}
 	object, ok := value.(map[string]any)
@@ -254,7 +254,7 @@ func canonicalInput(entry registration, input string) (string, string, error) {
 	if err := entry.schema.Validate(object); err != nil {
 		return "", "", lifecycleError(ErrToolInputInvalid, err, "validate", "", "input does not match schema")
 	}
-	canonical, err := jsoncodec.MarshalString(object)
+	canonical, err := json.Marshal(object)
 	if err != nil {
 		return "", "", lifecycleError(ErrToolInputInvalid, err, "canonicalize", "", "input cannot be canonicalized")
 	}
@@ -262,5 +262,5 @@ func canonicalInput(entry registration, input string) (string, string, error) {
 	if err != nil {
 		return "", "", fmt.Errorf("%w: %v", ErrToolInputInvalid, err)
 	}
-	return canonical, digest, nil
+	return string(canonical), digest, nil
 }

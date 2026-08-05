@@ -1,20 +1,21 @@
 package tool
 
 import (
+	"encoding/json"
+
 	"github.com/iceymoss/agent-runtime-go"
-	jsoncodec "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 )
 
 func cloneDefinition(value agent.ToolDefinition) agent.ToolDefinition {
 	if value.Parameters == nil {
 		return value
 	}
-	data, err := jsoncodec.Marshal(value.Parameters)
+	data, err := json.Marshal(value.Parameters)
 	if err != nil {
 		return value
 	}
 	var parameters map[string]any
-	if err := jsoncodec.Unmarshal(data, &parameters); err != nil {
+	if err := json.Unmarshal(data, &parameters); err != nil {
 		return value
 	}
 	value.Parameters = parameters

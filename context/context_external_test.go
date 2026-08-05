@@ -2,6 +2,7 @@ package context_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -11,7 +12,6 @@ import (
 
 	"github.com/iceymoss/agent-runtime-go"
 	agentcontext "github.com/iceymoss/agent-runtime-go/context"
-	projectjson "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 )
 
 type textCounter struct{}
@@ -142,11 +142,11 @@ func TestPlannerDeterministicBudgetImmutableAndExact(t *testing.T) {
 		t.Fatalf("MarshalWire() error = %v", err)
 	}
 	var wire map[string]any
-	if err := projectjson.Unmarshal(data, &wire); err != nil {
+	if err := json.Unmarshal(data, &wire); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
 	wire["ref"].(map[string]any)["plan_digest"] = "tampered"
-	data, err = projectjson.Marshal(wire)
+	data, err = json.Marshal(wire)
 	if err != nil {
 		t.Fatalf("Marshal(tampered) error = %v", err)
 	}

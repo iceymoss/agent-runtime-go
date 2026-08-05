@@ -2,12 +2,11 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
-
-	jsoncodec "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -171,7 +170,7 @@ func validateToolInput(entry registeredTool, input string) error {
 	if input == "" {
 		input = "{}"
 	}
-	if err := jsoncodec.Unmarshal([]byte(input), &value); err != nil {
+	if err := json.Unmarshal([]byte(input), &value); err != nil {
 		return fmt.Errorf("参数不是合法 JSON 对象: %w", err)
 	}
 	if _, ok := value.(map[string]any); !ok {

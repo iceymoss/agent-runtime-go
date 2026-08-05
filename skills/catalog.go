@@ -2,6 +2,7 @@ package skills
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -9,7 +10,6 @@ import (
 	"time"
 
 	"github.com/iceymoss/agent-runtime-go"
-	jsoncodec "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 )
 
 type catalogGeneration struct {
@@ -404,7 +404,7 @@ func (m *Manager) build(_ Scope, loaded []loadedSource, diagnostics []Diagnostic
 		Descriptors []Descriptor      `json:"descriptors"`
 		Diagnostics []Diagnostic      `json:"diagnostics,omitempty"`
 	}{CurrentSchemaVersion, sourceGenerations, descriptors, diagnostics}
-	body, err := jsoncodec.Marshal(digestInput)
+	body, err := json.Marshal(digestInput)
 	if err != nil {
 		return nil, fmt.Errorf("digest catalog: %w", err)
 	}

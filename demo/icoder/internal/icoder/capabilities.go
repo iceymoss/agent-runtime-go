@@ -2,6 +2,7 @@ package icoder
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,7 +10,6 @@ import (
 	"time"
 
 	"github.com/iceymoss/agent-runtime-go"
-	jsoncodec "github.com/iceymoss/agent-runtime-go/demo/icoder/internal/jsoncodec"
 	"github.com/iceymoss/agent-runtime-go/mcp"
 	"github.com/iceymoss/agent-runtime-go/subagent"
 )
@@ -37,14 +37,14 @@ func (t *mcpAgentTool) Definition() agent.ToolDefinition { return t.definition }
 func (t *mcpAgentTool) ReplayPolicy() agent.ReplayPolicy { return agent.ReplayPolicyNever }
 func (t *mcpAgentTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
 	var arguments map[string]any
-	if err := jsoncodec.Unmarshal([]byte(invocation.RawInput), &arguments); err != nil {
+	if err := json.Unmarshal([]byte(invocation.RawInput), &arguments); err != nil {
 		return agent.ToolResult{}, err
 	}
 	result, err := t.manager.CallTool(ctx, mcp.ToolCall{Scope: t.scope, Generation: t.generation, ServerID: t.serverID, CallID: invocation.CallID, Name: t.upstream, Arguments: arguments})
 	if err != nil {
 		return agent.ToolResult{}, err
 	}
-	data, err := jsoncodec.MarshalString(result)
+	data, err := marshalString(result)
 	if err != nil {
 		return agent.ToolResult{}, err
 	}
@@ -119,7 +119,7 @@ func (t *delegateReviewTool) Execute(ctx context.Context, invocation agent.ToolI
 	var input struct {
 		Task string `json:"task"`
 	}
-	if err := jsoncodec.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
+	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
 		return agent.ToolResult{}, err
 	}
 	limits := subagent.Limits{MaxDepth: 2, MaxFanout: 2, MaxInputTokens: 4096, MaxOutputTokens: 1024, MaxCostMicros: 1_000_000, MaxToolCalls: 10, MaxRuntime: time.Minute}

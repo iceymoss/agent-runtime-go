@@ -2,6 +2,7 @@ package coordinator_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/iceymoss/agent-runtime-go"
 	"github.com/iceymoss/agent-runtime-go/coordinator"
-	jsoncodec "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 	"github.com/iceymoss/agent-runtime-go/provider"
 	"github.com/iceymoss/agent-runtime-go/session"
 )
@@ -39,7 +39,7 @@ func TestArtifactManifestWireRoundTripAndExecutableNeverSerialized(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded, err := jsoncodec.Marshal(manifest)
+	encoded, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestArtifactManifestWireRoundTripAndExecutableNeverSerialized(t *testing.T)
 		t.Fatalf("manifest serialized executable data: %s", encoded)
 	}
 	var decoded coordinator.ArtifactManifest
-	if err := jsoncodec.Unmarshal(encoded, &decoded); err != nil {
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatal(err)
 	}
 	if err := coordinator.ValidateArtifactManifest(decoded); err != nil {
@@ -58,7 +58,7 @@ func TestArtifactManifestWireRoundTripAndExecutableNeverSerialized(t *testing.T)
 	}
 
 	built := coordinator.BuildResult{Definition: definition, SystemMessages: wire.PromptMessages, Wire: wire}
-	builtJSON, err := jsoncodec.Marshal(built)
+	builtJSON, err := json.Marshal(built)
 	if err != nil {
 		t.Fatal(err)
 	}

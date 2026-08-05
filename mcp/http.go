@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,8 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-
-	jsoncodec "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 )
 
 type HTTPPolicy struct {
@@ -110,7 +109,7 @@ func (t *streamableHTTPTransport) Send(ctx context.Context, request Request) (Re
 	t.nextID++
 	id := t.nextID
 	t.mu.Unlock()
-	payload, err := jsoncodec.Marshal(struct {
+	payload, err := json.Marshal(struct {
 		JSONRPC string `json:"jsonrpc"`
 		ID      uint64 `json:"id"`
 		Method  string `json:"method"`
@@ -169,10 +168,10 @@ func (t *streamableHTTPTransport) Send(ctx context.Context, request Request) (Re
 		Result any            `json:"result"`
 		Error  *UpstreamError `json:"error"`
 	}
-	if err := jsoncodec.Unmarshal(body, &envelope); err != nil || envelope.ID != id {
+	if err := json.Unmarshal(body, &envelope); err != nil || envelope.ID != id {
 		return Response{}, mcpError(ErrUpstream, err, "http receive", "", "", "invalid response envelope")
 	}
-	result, err := jsoncodec.Marshal(envelope.Result)
+	result, err := json.Marshal(envelope.Result)
 	if err != nil {
 		return Response{}, mcpError(ErrUpstream, err, "http receive", "", "", "invalid response result")
 	}

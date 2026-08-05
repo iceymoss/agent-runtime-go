@@ -12,8 +12,7 @@ import (
 func TestAgentPackagesDoNotImportInternalPackages(t *testing.T) {
 	for packagePath, imports := range agentPackageImports(t) {
 		for _, dependency := range imports {
-			if strings.HasPrefix(dependency, "github.com/iceymoss/agent-runtime-go/internal/") &&
-				dependency != "github.com/iceymoss/agent-runtime-go/internal/jsoncodec" {
+			if strings.HasPrefix(dependency, "github.com/iceymoss/agent-runtime-go/internal/") {
 				t.Fatalf("%s imports internal package %s", packagePath, dependency)
 			}
 		}
@@ -22,8 +21,7 @@ func TestAgentPackagesDoNotImportInternalPackages(t *testing.T) {
 
 func TestRootAgentDoesNotImportChildPackages(t *testing.T) {
 	for _, dependency := range agentPackageImports(t)["github.com/iceymoss/agent-runtime-go"] {
-		if strings.HasPrefix(dependency, "github.com/iceymoss/agent-runtime-go/") &&
-			dependency != "github.com/iceymoss/agent-runtime-go/internal/jsoncodec" {
+		if strings.HasPrefix(dependency, "github.com/iceymoss/agent-runtime-go/") {
 			t.Fatalf("root agent imports child package %s", dependency)
 		}
 	}

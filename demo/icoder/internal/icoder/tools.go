@@ -2,11 +2,11 @@ package icoder
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/iceymoss/agent-runtime-go"
-	jsoncodec "github.com/iceymoss/agent-runtime-go/demo/icoder/internal/jsoncodec"
 	"github.com/iceymoss/agent-runtime-go/permission"
 )
 
@@ -97,14 +97,14 @@ func (t listFilesTool) Execute(ctx context.Context, invocation agent.ToolInvocat
 	var input struct {
 		Limit int `json:"limit"`
 	}
-	if err := jsoncodec.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
+	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
 		return agent.ToolResult{}, err
 	}
 	files, err := t.workspace.ListFiles(ctx, input.Limit)
 	if err != nil {
 		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
 	}
-	data, err := jsoncodec.MarshalString(files)
+	data, err := marshalString(files)
 	if err != nil {
 		return agent.ToolResult{}, err
 	}
@@ -115,7 +115,7 @@ func (t readFileTool) Execute(ctx context.Context, invocation agent.ToolInvocati
 	var input struct {
 		Path string `json:"path"`
 	}
-	if err := jsoncodec.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
+	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
 		return agent.ToolResult{}, err
 	}
 	content, err := t.workspace.ReadFile(ctx, input.Path)
@@ -136,14 +136,14 @@ func (t searchCodeTool) Execute(ctx context.Context, invocation agent.ToolInvoca
 		Pattern string `json:"pattern"`
 		Limit   int    `json:"limit"`
 	}
-	if err := jsoncodec.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
+	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
 		return agent.ToolResult{}, err
 	}
 	matches, err := t.workspace.Search(ctx, input.Pattern, input.Limit)
 	if err != nil {
 		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
 	}
-	data, err := jsoncodec.MarshalString(matches)
+	data, err := marshalString(matches)
 	if err != nil {
 		return agent.ToolResult{}, err
 	}
@@ -168,7 +168,7 @@ func (t runCommandTool) Execute(ctx context.Context, invocation agent.ToolInvoca
 		Args           []string `json:"args"`
 		TimeoutSeconds int      `json:"timeout_seconds"`
 	}
-	if err := jsoncodec.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
+	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
 		return agent.ToolResult{}, err
 	}
 	if err := validateCommand(input.Program, input.Args); err != nil {
@@ -178,7 +178,7 @@ func (t runCommandTool) Execute(ctx context.Context, invocation agent.ToolInvoca
 	if err != nil {
 		return agent.ToolResult{}, err
 	}
-	data, err := jsoncodec.MarshalString(result)
+	data, err := marshalString(result)
 	if err != nil {
 		return agent.ToolResult{}, err
 	}
@@ -210,7 +210,7 @@ func (t writeFileTool) Execute(ctx context.Context, invocation agent.ToolInvocat
 		Content        string `json:"content"`
 		ExpectedDigest string `json:"expected_digest"`
 	}
-	if err := jsoncodec.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
+	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
 		return agent.ToolResult{}, err
 	}
 	result, err := t.workspace.WriteFile(ctx, input.Path, input.Content, input.ExpectedDigest)

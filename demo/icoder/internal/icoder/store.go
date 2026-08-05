@@ -3,12 +3,12 @@ package icoder
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/iceymoss/agent-runtime-go"
-	jsoncodec "github.com/iceymoss/agent-runtime-go/demo/icoder/internal/jsoncodec"
 	"github.com/iceymoss/agent-runtime-go/event"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -115,7 +115,7 @@ func (s *Store) Load(ctx context.Context, sessionID string) (snapshot SessionSna
 			return SessionSnapshot{}, nil, err
 		}
 		var message agent.Message
-		if err := jsoncodec.Unmarshal([]byte(payload), &message); err != nil {
+		if err := json.Unmarshal([]byte(payload), &message); err != nil {
 			return SessionSnapshot{}, nil, fmt.Errorf("decode stored message: %w", err)
 		}
 		messages = append(messages, message)
@@ -124,7 +124,7 @@ func (s *Store) Load(ctx context.Context, sessionID string) (snapshot SessionSna
 }
 
 func (s *Store) CommitTurn(ctx context.Context, snapshot SessionSnapshot, requestID, inputDigest string, user agent.Message, result agent.RunResult) (resultErr error) {
-	resultPayload, err := jsoncodec.MarshalString(result)
+	resultPayload, err := marshalString(result)
 	if err != nil {
 		return err
 	}
@@ -155,7 +155,7 @@ func (s *Store) CommitTurn(ctx context.Context, snapshot SessionSnapshot, reques
 	}
 	messages := append([]agent.Message{user}, result.Messages...)
 	for _, message := range messages {
-		payload, marshalErr := jsoncodec.MarshalString(message)
+		payload, marshalErr := marshalString(message)
 		if marshalErr != nil {
 			return marshalErr
 		}
@@ -175,7 +175,7 @@ func (s *Store) CommitTurn(ctx context.Context, snapshot SessionSnapshot, reques
 	if _, err := tx.ExecContext(ctx, `INSERT INTO icoder_turns(session_id, request_id, input_digest, result_payload) VALUES(?, ?, ?, ?)`, snapshot.ID, requestID, inputDigest, resultPayload); err != nil {
 		return err
 	}
-	payload, err := jsoncodec.MarshalString(map[string]any{"outcome": result.Outcome, "stop_reason": result.StopReason, "usage": result.Usage})
+	payload, err := marshalString(map[string]any{"outcome": result.Outcome, "stop_reason": result.StopReason, "usage": result.Usage})
 	if err != nil {
 		return err
 	}

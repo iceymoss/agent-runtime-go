@@ -2,6 +2,7 @@ package icoder
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/iceymoss/agent-runtime-go"
-	jsoncodec "github.com/iceymoss/agent-runtime-go/demo/icoder/internal/jsoncodec"
 )
 
 func TestAppRunsToolLoopAndCommitsTurn(t *testing.T) {
@@ -32,7 +32,7 @@ func TestAppRunsToolLoopAndCommitsTurn(t *testing.T) {
 			return
 		}
 		var decoded chatRequest
-		if err := jsoncodec.Unmarshal(body, &decoded); err != nil {
+		if err := json.Unmarshal(body, &decoded); err != nil {
 			t.Error(err)
 			response.WriteHeader(http.StatusBadRequest)
 			return

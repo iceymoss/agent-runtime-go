@@ -3,14 +3,13 @@ package skills
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
-
-	jsoncodec "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 )
 
 var (
@@ -133,12 +132,12 @@ func validateAndDigest(skill SourceSkill, source SourceRef, limits Limits) (Sour
 	canonical.DescriptorDigest = ""
 	canonical.InstructionsDigest = ""
 	canonical.ContentDigest = ""
-	descriptorBytes, err := jsoncodec.Marshal(canonical)
+	descriptorBytes, err := json.Marshal(canonical)
 	if err != nil {
 		return SourceSkill{}, fmt.Errorf("digest descriptor: %w", err)
 	}
 	d.DescriptorDigest = digestBytes(descriptorBytes)
-	manifestBytes, err := jsoncodec.Marshal(artifacts)
+	manifestBytes, err := json.Marshal(artifacts)
 	if err != nil {
 		return SourceSkill{}, fmt.Errorf("digest content: %w", err)
 	}

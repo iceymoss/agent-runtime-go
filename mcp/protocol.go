@@ -2,9 +2,8 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-
-	jsoncodec "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 )
 
 type protocolClient struct {
@@ -111,10 +110,10 @@ func (c *protocolClient) invoke(ctx context.Context, method string, params any, 
 	if response.Error != nil {
 		return response.Error
 	}
-	if !jsoncodec.Valid(response.Result) {
+	if !json.Valid(response.Result) {
 		return fmt.Errorf("%w: invalid JSON result", ErrUpstream)
 	}
-	if err := jsoncodec.Unmarshal(response.Result, target); err != nil {
+	if err := json.Unmarshal(response.Result, target); err != nil {
 		return fmt.Errorf("%w: decode result: %w", ErrUpstream, err)
 	}
 	return nil

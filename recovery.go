@@ -1,13 +1,14 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
-
-	jsoncodec "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 )
 
 const (
@@ -218,7 +219,7 @@ type CheckpointStore interface {
 // representation. JSON object keys are ordered by the codec; array order remains
 // significant because it can change message and tool semantics.
 func CanonicalDigest(value any) (string, error) {
-	data, err := jsoncodec.Marshal(value)
+	data, err := json.Marshal(value)
 	if err != nil {
 		return "", fmt.Errorf("marshal canonical digest input: %w", err)
 	}
@@ -244,7 +245,7 @@ func DigestToolInput(input string) (string, error) {
 		normalized = "{}"
 	}
 	var value any
-	if err := jsoncodec.Unmarshal([]byte(normalized), &value); err != nil {
+	if err := json.Unmarshal([]byte(normalized), &value); err != nil {
 		return digestBytes([]byte(input)), nil
 	}
 	return CanonicalDigest(value)
@@ -319,19 +320,34 @@ func MarshalRunSnapshot(snapshot RunSnapshot) ([]byte, error) {
 	if snapshot.SchemaVersion != RunSnapshotSchemaVersion {
 		return nil, fmt.Errorf("%w: %d", ErrUnsupportedRunSnapshotSchema, snapshot.SchemaVersion)
 	}
-	return jsoncodec.Marshal(snapshot)
+	return json.Marshal(snapshot)
 }
 
 // UnmarshalRunSnapshot rejects old and future schemas before state is resumed.
 func UnmarshalRunSnapshot(data []byte) (RunSnapshot, error) {
 	var snapshot RunSnapshot
-	if err := jsoncodec.UnmarshalStrict(data, &snapshot); err != nil {
+	if err := unmarshalJSONStrict(data, &snapshot); err != nil {
 		return RunSnapshot{}, fmt.Errorf("decode run snapshot: %w", err)
 	}
 	if snapshot.SchemaVersion != RunSnapshotSchemaVersion {
 		return RunSnapshot{}, fmt.Errorf("%w: %d", ErrUnsupportedRunSnapshotSchema, snapshot.SchemaVersion)
 	}
 	return snapshot, nil
+}
+
+func unmarshalJSONStrict(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("unexpected trailing JSON value")
+		}
+		return err
+	}
+	return nil
 }
 
 // Clone returns a deep copy suitable for crossing a store or observer boundary.

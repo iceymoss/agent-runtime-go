@@ -2,12 +2,12 @@ package context
 
 import (
 	stdcontext "context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/iceymoss/agent-runtime-go"
-	projectjson "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 )
 
 type PlanRef struct {
@@ -76,7 +76,7 @@ func (p Plan) MarshalWire() ([]byte, error) {
 	if err := validatePlan(p); err != nil {
 		return nil, err
 	}
-	return projectjson.Marshal(struct {
+	return json.Marshal(struct {
 		Ref  PlanRef  `json:"ref"`
 		Wire planWire `json:"wire"`
 	}{Ref: p.ref, Wire: clonePlan(p).wire})
@@ -87,7 +87,7 @@ func UnmarshalPlan(data []byte) (Plan, error) {
 		Ref  PlanRef  `json:"ref"`
 		Wire planWire `json:"wire"`
 	}
-	if err := projectjson.UnmarshalStrict(data, &envelope); err != nil {
+	if err := unmarshalStrict(data, &envelope); err != nil {
 		return Plan{}, contextError(CodeInvalidRequest, "unmarshal_plan", "", ErrInvalidRequest, err)
 	}
 	plan := Plan{ref: envelope.Ref, wire: envelope.Wire}
@@ -233,7 +233,7 @@ func projectFacts(set FactSet) ([]agent.Message, error) {
 	if len(set.Facts) == 0 {
 		return nil, nil
 	}
-	text, err := projectjson.MarshalString(struct {
+	data, err := json.Marshal(struct {
 		Schema string          `json:"schema"`
 		Digest string          `json:"digest"`
 		Facts  []ProtectedFact `json:"facts"`
@@ -241,7 +241,7 @@ func projectFacts(set FactSet) ([]agent.Message, error) {
 	if err != nil {
 		return nil, contextError(CodeInvalidRequest, "project_facts", "", ErrInvalidRequest, err)
 	}
-	return []agent.Message{agent.NewSystemMessage(text)}, nil
+	return []agent.Message{agent.NewSystemMessage(string(data))}, nil
 }
 
 func validatePrepareRequest(request PrepareRequest) error {

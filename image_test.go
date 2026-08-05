@@ -2,10 +2,9 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"testing"
-
-	projectjson "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 )
 
 const testImageDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -62,12 +61,12 @@ func TestImageTextOrderJSONRoundTripAndDigest(t *testing.T) {
 		MediaType: "image/webp", Ref: "opaque/ref", Digest: testImageDigest, SizeBytes: 4,
 	}}}}
 	for _, original := range []Message{message, refMessage} {
-		data, err := projectjson.Marshal(original)
+		data, err := json.Marshal(original)
 		if err != nil {
 			t.Fatal(err)
 		}
 		var decoded Message
-		if err := projectjson.UnmarshalStrict(data, &decoded); err != nil {
+		if err := unmarshalJSONStrict(data, &decoded); err != nil {
 			t.Fatal(err)
 		}
 		if !reflect.DeepEqual(decoded, original) {

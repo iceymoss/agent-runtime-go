@@ -3,6 +3,7 @@ package mcp
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,8 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	jsoncodec "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 )
 
 type ArgValidator func([]string) error
@@ -154,7 +153,7 @@ func (t *stdioTransport) Send(ctx context.Context, request Request) (Response, e
 		}
 	}
 	t.nextID++
-	payload, err := jsoncodec.Marshal(struct {
+	payload, err := json.Marshal(struct {
 		JSONRPC string `json:"jsonrpc"`
 		ID      uint64 `json:"id"`
 		Method  string `json:"method"`
@@ -182,7 +181,7 @@ func (t *stdioTransport) Send(ctx context.Context, request Request) (Response, e
 		Result []byte         `json:"result"`
 		Error  *UpstreamError `json:"error"`
 	}
-	if err := jsoncodec.Unmarshal(line, &envelope); err != nil || envelope.ID != t.nextID {
+	if err := json.Unmarshal(line, &envelope); err != nil || envelope.ID != t.nextID {
 		return Response{}, mcpError(ErrUpstream, err, "stdio receive", "", "", "invalid response envelope")
 	}
 	return Response{Result: append([]byte(nil), envelope.Result...), Error: envelope.Error}, nil

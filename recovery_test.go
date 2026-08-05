@@ -3,12 +3,11 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
 	"time"
-
-	jsoncodec "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 )
 
 func TestCanonicalDigestIsDeterministic(t *testing.T) {
@@ -174,7 +173,7 @@ func TestToolExecutionV1ExactFixtures(t *testing.T) {
 				Status:         tt.status,
 				Result:         tt.result,
 			}
-			got, err := jsoncodec.Marshal(execution)
+			got, err := json.Marshal(execution)
 			if err != nil {
 				t.Fatalf("Marshal() error = %v", err)
 			}

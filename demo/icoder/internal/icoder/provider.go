@@ -3,6 +3,7 @@ package icoder
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,7 +11,6 @@ import (
 	"time"
 
 	"github.com/iceymoss/agent-runtime-go"
-	jsoncodec "github.com/iceymoss/agent-runtime-go/demo/icoder/internal/jsoncodec"
 )
 
 type OpenAIModel struct {
@@ -86,7 +86,7 @@ func (m *OpenAIModel) Stream(ctx context.Context, request *agent.GenerateRequest
 	if err != nil {
 		return nil, err
 	}
-	body, err := jsoncodec.Marshal(wire)
+	body, err := json.Marshal(wire)
 	if err != nil {
 		return nil, fmt.Errorf("marshal provider request: %w", err)
 	}
@@ -117,7 +117,7 @@ func (m *OpenAIModel) Stream(ctx context.Context, request *agent.GenerateRequest
 		return nil, agent.NewModelError(kind, retryable, httpResponse.StatusCode, 0, "provider rejected request", fmt.Errorf("provider status %d", httpResponse.StatusCode))
 	}
 	var decoded chatResponse
-	if err := jsoncodec.Unmarshal(responseBody, &decoded); err != nil {
+	if err := json.Unmarshal(responseBody, &decoded); err != nil {
 		return nil, agent.NewModelError(agent.ModelErrorKindProtocol, false, httpResponse.StatusCode, 0, "invalid provider response", err)
 	}
 	response, err := projectChatResponse(decoded)

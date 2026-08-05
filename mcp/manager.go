@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -9,7 +10,6 @@ import (
 	"sync/atomic"
 
 	"github.com/iceymoss/agent-runtime-go"
-	jsoncodec "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 )
 
 type manager struct {
@@ -574,7 +574,7 @@ func resultSize(result ToolResult) int64 {
 		size += int64(len(content.Text) + len(content.Data) + len(content.URI) + len(content.Name) + len(content.MIMEType))
 	}
 	if result.StructuredContent != nil {
-		serialized, err := jsoncodec.Marshal(result.StructuredContent)
+		serialized, err := json.Marshal(result.StructuredContent)
 		if err == nil {
 			size += int64(len(serialized))
 		}
@@ -583,7 +583,7 @@ func resultSize(result ToolResult) int64 {
 		if content.Structured == nil && content.Annotations == nil {
 			continue
 		}
-		serialized, err := jsoncodec.Marshal(struct {
+		serialized, err := json.Marshal(struct {
 			Structured  any            `json:"structured,omitempty"`
 			Annotations map[string]any `json:"annotations,omitempty"`
 		}{Structured: content.Structured, Annotations: content.Annotations})

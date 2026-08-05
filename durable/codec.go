@@ -1,12 +1,14 @@
 package durable
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/iceymoss/agent-runtime-go"
-	jsoncodec "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 )
 
 const digestPrefix = "sha256:"
@@ -15,12 +17,12 @@ func MarshalSnapshot(snapshot Snapshot) ([]byte, error) {
 	if snapshot.SchemaVersion != SnapshotSchemaVersion {
 		return nil, durableError(ErrSnapshotSchema, "marshal", RunKey(snapshot.Identity.RunKey), fmt.Sprintf("version %d", snapshot.SchemaVersion))
 	}
-	return jsoncodec.Marshal(snapshot)
+	return json.Marshal(snapshot)
 }
 
 func UnmarshalSnapshot(data []byte) (Snapshot, error) {
 	var snapshot Snapshot
-	if err := jsoncodec.UnmarshalStrict(data, &snapshot); err != nil {
+	if err := unmarshalStrict(data, &snapshot); err != nil {
 		return Snapshot{}, durableError(ErrSnapshotSchema, "decode", "", err.Error())
 	}
 	if snapshot.SchemaVersion != SnapshotSchemaVersion {
@@ -29,8 +31,23 @@ func UnmarshalSnapshot(data []byte) (Snapshot, error) {
 	return snapshot, nil
 }
 
+func unmarshalStrict(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("unexpected trailing JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
 func CanonicalDigest(value any) (string, error) {
-	data, err := jsoncodec.Marshal(value)
+	data, err := json.Marshal(value)
 	if err != nil {
 		return "", fmt.Errorf("marshal canonical digest input: %w", err)
 	}
@@ -46,7 +63,7 @@ func DigestToolInput(input string) (string, error) {
 		normalized = "{}"
 	}
 	var value any
-	if err := jsoncodec.Unmarshal([]byte(normalized), &value); err != nil {
+	if err := json.Unmarshal([]byte(normalized), &value); err != nil {
 		return digestBytes([]byte(input)), nil
 	}
 	return CanonicalDigest(value)
@@ -93,12 +110,12 @@ func digestBytes(data []byte) string {
 }
 
 func cloneSnapshot(snapshot Snapshot) Snapshot {
-	data, err := jsoncodec.Marshal(snapshot)
+	data, err := json.Marshal(snapshot)
 	if err != nil {
 		panic("durable: snapshot clone marshal failed: " + err.Error())
 	}
 	var cloned Snapshot
-	if err := jsoncodec.Unmarshal(data, &cloned); err != nil {
+	if err := json.Unmarshal(data, &cloned); err != nil {
 		panic("durable: snapshot clone unmarshal failed: " + err.Error())
 	}
 	return cloned

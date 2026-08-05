@@ -2,6 +2,7 @@ package event
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
@@ -9,7 +10,6 @@ import (
 	"time"
 
 	"github.com/iceymoss/agent-runtime-go"
-	"github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 )
 
 type streamIdentity struct {

@@ -1,12 +1,12 @@
 package context
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/iceymoss/agent-runtime-go"
-	projectjson "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 )
 
 type openCall struct {
@@ -65,7 +65,7 @@ func NormalizeHistory(request NormalizeRequest) (NormalizeResult, error) {
 				seenCalls[call.ID] = struct{}{}
 				open[call.ID] = openCall{name: call.Name, partIndex: partIndex}
 				callIDs = append(callIDs, call.ID)
-				if !projectjson.Valid([]byte(call.Input)) {
+				if !json.Valid([]byte(call.Input)) {
 					result.Diagnostics = append(result.Diagnostics, Diagnostic{Code: DiagnosticMalformedInput, MessageIndex: sourceIndex, PartIndex: partIndex, CallID: call.ID})
 				}
 			}
@@ -247,7 +247,7 @@ func syntheticTerminalContent(fact TerminalFact) string {
 	if fact.EffectUnknown {
 		status = "terminal_effect_unknown"
 	}
-	value, err := projectjson.MarshalString(struct {
+	data, err := json.Marshal(struct {
 		Status         string `json:"status"`
 		Reason         string `json:"reason"`
 		SourceRevision uint64 `json:"source_revision"`
@@ -255,7 +255,7 @@ func syntheticTerminalContent(fact TerminalFact) string {
 	if err != nil {
 		return `{"status":"terminal_error"}`
 	}
-	return value
+	return string(data)
 }
 
 func cloneNormalizeResult(result NormalizeResult) NormalizeResult {

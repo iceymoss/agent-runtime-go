@@ -3,6 +3,7 @@ package durable_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -10,7 +11,6 @@ import (
 
 	"github.com/iceymoss/agent-runtime-go"
 	"github.com/iceymoss/agent-runtime-go/durable"
-	jsoncodec "github.com/iceymoss/agent-runtime-go/internal/jsoncodec"
 )
 
 func TestSnapshotV1ExactJSONAndDigestParity(t *testing.T) {
@@ -43,7 +43,7 @@ func TestSnapshotV1ExactJSONAndDigestParity(t *testing.T) {
 		t.Fatalf("round trip JSON = %s, %v", roundTripJSON, err)
 	}
 	var generic map[string]any
-	if err := jsoncodec.Unmarshal(got, &generic); err != nil {
+	if err := json.Unmarshal(got, &generic); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := durable.UnmarshalSnapshot([]byte(`{"schema_version":1,"unknown":true}`)); !errors.Is(err, durable.ErrSnapshotSchema) {

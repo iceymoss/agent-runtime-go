@@ -2,6 +2,7 @@ package icoder
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +12,6 @@ import (
 	"time"
 
 	"github.com/iceymoss/agent-runtime-go"
-	jsoncodec "github.com/iceymoss/agent-runtime-go/demo/icoder/internal/jsoncodec"
 )
 
 type WeatherProvider interface {
@@ -147,7 +147,7 @@ func (p *OpenMeteoWeatherProvider) getJSON(ctx context.Context, endpoint string,
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return fmt.Errorf("weather service returned HTTP %d", response.StatusCode)
 	}
-	if err := jsoncodec.Unmarshal(body, output); err != nil {
+	if err := json.Unmarshal(body, output); err != nil {
 		return fmt.Errorf("decode weather response: %w", err)
 	}
 	return nil
@@ -174,14 +174,14 @@ func (t weatherTool) Execute(ctx context.Context, invocation agent.ToolInvocatio
 		Location string `json:"location"`
 		Units    string `json:"units"`
 	}
-	if err := jsoncodec.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
+	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
 		return agent.ToolResult{}, err
 	}
 	weather, err := t.provider.Current(ctx, input.Location, input.Units)
 	if err != nil {
 		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
 	}
-	content, err := jsoncodec.MarshalString(weather)
+	content, err := marshalString(weather)
 	if err != nil {
 		return agent.ToolResult{}, err
 	}
