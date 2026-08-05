@@ -1,4 +1,4 @@
-// Package app coordinates Agent SDK component readiness and shutdown ordering.
+// Package app coordinates Agent runtime component readiness and shutdown ordering.
 package app
 
 import (

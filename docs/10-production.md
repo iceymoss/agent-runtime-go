@@ -1,4 +1,4 @@
-# 生产演进
+# 生产集成检查表
 
 iCoder 是 boundary-correct reference application，不是完整 sandbox 或 distributed host。
 
@@ -49,3 +49,15 @@ cd demo/icoder
 go test ./... -count=1
 go vet ./...
 ```
+
+## 发布前检查
+
+- 固定 module version，不依赖浮动分支。
+- Provider adapter 通过 conformance 和 cancellation 测试。
+- 每个工具声明 replay policy，并限制输入、输出和 timeout。
+- Prompt、definition、skills、MCP 和 tokenizer 使用可追踪版本。
+- Persisted operation 带 tenant scope、request idempotency、revision 和必要 fence。
+- Observation 不参与权威状态判断。
+- Event outbox 与 aggregate transaction 原子提交。
+- Shutdown 停止 admission，等待有界 drain，再关闭依赖。
+- 日志不记录 credential、完整敏感 Prompt 或未经处理的工具输出。

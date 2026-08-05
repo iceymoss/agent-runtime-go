@@ -1,8 +1,7 @@
-// Package agent 是与业务解耦的通用 agent runtime：
-// 多轮 tool-calling 循环、流式输出、会话持久化接口、提示词渲染、工具注册与白名单。
-//
-// 铁律：本包及其子包不得 import 任何 internal/ 包（由 deps_test.go 断言）。
-// 业务侧通过实现 Model / Tool / SessionStore / MessageStore 接口接入。
+// Package agent provides provider-neutral messages, models, tools, streaming,
+// and a stateless multi-step model/tool runtime. Applications supply concrete
+// model and tool adapters and may add optional child packages for stateful or
+// durable hosting.
 package agent
 
 import (

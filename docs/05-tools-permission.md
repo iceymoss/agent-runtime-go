@@ -1,5 +1,7 @@
 # Tool 与 Permission
 
+根 Tool 解决“模型可以调用什么”，Permission 解决“当前主体是否允许执行这次具体 effect”。这两个问题不能只靠 Prompt 合并。
+
 ## Root Tool
 
 普通工具实现：
@@ -34,7 +36,7 @@ iCoder 的 `run_command` 只允许 `go test/vet/build/fmt` 和 `git status/diff/
 
 ## Permission Bridge
 
-`agent/permission` 的核心是 `Policy`、`Store` 和 `Service`。调用方把 canonical tool input 映射成准确的 `Subject`、`Resource` 和 `Action`：
+`permission` 的核心是 `Policy`、`Store` 和 `Service`。调用方把 canonical tool input 映射成准确的 `Subject`、`Resource` 和 `Action`：
 
 ```go
 decision, err := service.Check(ctx, permission.CheckRequest{
@@ -52,6 +54,20 @@ iCoder 的 `authorizedTool` 展示根 `agent.Tool` 到 `permission.Service` 的 
 
 ## Advanced Tool Lifecycle
 
-需要 interceptor、effect ledger、fence 和 unknown-effect classification 时使用 `agent/tool.Executor`。根 runtime 仍调用 `agent.Tool`，应用需要一个 adapter 将 invocation 映射到 `tool.ExecuteRequest`。
+需要 interceptor、effect ledger、fence 和 unknown-effect classification 时使用 `tool.Executor`。根 runtime 仍调用 `agent.Tool`，应用需要一个 adapter 将 invocation 映射到 `tool.ExecuteRequest`。
 
 当前不要假定 `ask -> approve -> 重调 Execute` 会自动恢复同一 prepared execution。生产集成必须显式设计 approval revalidation 和 ledger transition。
+
+## 错误选择
+
+| 情况 | 返回 |
+|---|---|
+| 参数语义可修正 | `ToolResult{IsError: true}` |
+| 资源不存在，模型可换方案 | `ToolResult{IsError: true}` |
+| Context cancelled | `ctx.Err()` |
+| 数据库或网络基础设施失败 | 非 `nil` Go error |
+| effect 已发生但结果未知 | 进入 unknown/resolve 流程，不盲目重试 |
+
+## 测试
+
+Tool 测试至少覆盖正常输入、schema 拒绝、可修正错误、context cancellation 和 replay/idempotency。敏感工具还需证明 permission subject/resource/action 映射准确。

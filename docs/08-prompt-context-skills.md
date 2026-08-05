@@ -1,8 +1,10 @@
 # Prompt、Skills 与 Context
 
+三者都参与模型输入，但所有权不同：Prompt 是可信应用策略，Skills 是非可信动态说明，Context 是本次调用经过预算处理的消息。
+
 ## Prompt
 
-`agent/prompt` 编译不可变 Go text template：
+`prompt` 编译不可变 Go text template：
 
 ```go
 compiled, err := prompt.New("code-agent/v1", source)
@@ -14,7 +16,7 @@ version := compiled.Version()
 
 ## Skills
 
-`agent/skills` 管理 tenant-scoped、不可变、非可信的 instruction/artifact catalog。Skill 不会执行代码，也不会授予工具权限。
+`skills` 管理 tenant-scoped、不可变、非可信的 instruction/artifact catalog。Skill 不会执行代码，也不会授予工具权限。
 
 ```go
 source := skills.NewFilesystemSource(skills.FilesystemOptions{
@@ -64,3 +66,16 @@ plan, err := planner.Prepare(ctx, agentcontext.PrepareRequest{
 `TokenCounter` 是 consumer port。iCoder 的 byte counter 只是保守 demo；生产实现应绑定 provider/model/tokenizer 版本。工具 schema 和 media token 需要调用方纳入预算。
 
 根 runtime 不会在每个 tool step 重新调用 planner。工具输出必须限制大小，后续步骤由 provider usage 和 `ContextWindow` 兜底。
+
+## 推荐顺序
+
+```text
+select immutable prompt version
+  -> resolve exact skill generation
+  -> normalize persisted history
+  -> prepare a revision-bound context plan
+  -> append current user message
+  -> call root runtime
+```
+
+不要把 Skill 文本拼进 system prompt 后就视为可信，也不要让 compaction 摘要改变工具调用 ID、权限事实或未完成的交互状态。

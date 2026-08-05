@@ -1,4 +1,10 @@
-# 模型提供商
+# Provider Adapter
+
+只有 `agent.Model` 的实现与具体供应商协议耦合。Runtime、Tool 和业务 facade 都只使用 canonical contract。
+
+## 何时使用 Provider 子包
+
+只有一个固定 endpoint 时，直接构造 `agent.Model` 即可。出现多供应商、模型角色、动态 credential、价格元数据或 generation 固定需求时，再增加 `provider` catalog 和 factory。
 
 ## Root Port
 
@@ -25,7 +31,7 @@ iCoder 在 `provider.go` 实现一个小型 OpenAI-compatible Chat Completions a
 
 ## Provider Catalog
 
-`agent/provider` 不包含 vendor client。它拥有不可变 catalog、model descriptor、pricing 和 factory port：
+`provider` 不包含 vendor client。它拥有不可变 catalog、model descriptor、pricing 和 factory port：
 
 ```go
 catalog, err := provider.NewCatalogSnapshot(generation, now, descriptors)
@@ -40,3 +46,12 @@ descriptor, ok := catalog.Model(provider.ModelRef{
 ## Adapter Tests
 
 外部 adapter 应使用 test-only `agenttest.TestModel`。它验证终态、usage、错误分类和 cancellation。生产代码不能导入 `agenttest`。
+
+## 常见错误
+
+- 将供应商 DTO 暴露给 Tool 或业务 facade。
+- 丢失 `nil` 与显式零值的差异。
+- 在发送 `ChunkToolCall` 前没有拼完 argument delta。
+- 最终 Response 与前面的 text/tool chunks 不一致。
+- 将 rate limit、auth 或 cancellation 全部包装成普通字符串错误。
+- 在 SDK 内读取 API Key；credential resolution 应留在应用 adapter。
