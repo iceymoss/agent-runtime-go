@@ -2,7 +2,7 @@
 
 `icoder` 是基于 Agent Runtime for Go 的 Code Agent demo，也是一个独立 Go module。它只通过 runtime 的公开 API 组合 OpenAI-compatible model、8 个内置工具、Permission、Skills、可选 MCP、synthetic Sub-Agent 和 SQLite 会话历史。
 
-完整源码导读、请求时序和扩展路线见 [`../../docs/09-icoder-tutorial.md`](../../docs/09-icoder-tutorial.md)。
+完整源码导读、请求时序和扩展路线见 [iCoder 教程](../../docs/icoder.md)。
 
 ## 先看路径
 
@@ -206,4 +206,4 @@ demo 只接一个 Streamable HTTP endpoint，不从配置启动本地 stdio 命�
 - MCP 工具未走 permission，MCP generation 未持久化。
 - 只有成功返回并提交的 turn 写入 demo SQLite。
 
-更详细的 schema、Mermaid 时序图和生产替换建议见[完整教程](../../docs/09-icoder-tutorial.md)；API 结果和包选择见[速查表](../../docs/10-reference.md)。
+更详细的 schema、Mermaid 时序图和生产替换建议见[完整教程](../../docs/icoder.md)；API 结果和包选择见[速查表](../../docs/reference.md)。

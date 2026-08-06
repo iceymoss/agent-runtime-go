@@ -224,7 +224,7 @@ agent-runtime-go
 
 应用负责保存当前 user message 和 `RunResult.Messages`。根 `Agent` 自身无会话状态，可以被多个请求并发复用。
 
-完整入门步骤见[《快速开始》](docs/02-quick-start.md)。可运行的 Code Agent reference application 见 [`demo/icoder`](demo/icoder/README.md)。
+完整入门步骤见[《快速开始》](docs/quickstart.md)。可运行的 Code Agent reference application 见 [`demo/icoder`](demo/icoder/README.md)。
 
 ## 选择子包
 
@@ -250,7 +250,7 @@ agent-runtime-go
 | readiness 与有界 shutdown | `app` |
 | adapter conformance tests | `agenttest`，仅测试使用 |
 
-详细职责、原理和最小组合见[《子包职责与接入指南》](docs/07-subpackages.md)。
+每个子包都有独立文档，覆盖"是什么、为什么、怎么用、常见问题"，见[文档索引](docs/README.md)。
 
 ## 运行原理
 
@@ -280,7 +280,7 @@ validate response <- aggregate one model step
 
 根包不读取环境变量、不选择 credential、不连接数据库，也不隐式注册全局工具。这些策略属于消费方应用。
 
-更详细的执行语义见[《实现原理》](docs/05-runtime-internals.md)。
+更详细的执行语义见[《运行循环内部机制》](docs/internals.md)。
 
 ## 示例
 
@@ -293,16 +293,11 @@ validate response <- aggregate one model step
 
 ## 文档
 
-1. [简介：定位、能力与边界](docs/01-introduction.md)
-2. [快速开始：最小可运行 Agent](docs/02-quick-start.md)
-3. [总览：核心概念与包地图](docs/03-overview.md)
-4. [架构：端口、适配器与组合](docs/04-architecture.md)
-5. [实现原理：运行循环与 Durable 边界](docs/05-runtime-internals.md)
-6. [根包核心内容](docs/06-root-package.md)
-7. [子包职责与接入指南](docs/07-subpackages.md)
-8. [生产组合模式](docs/08-production-patterns.md)
-9. [iCoder 端到端教程](docs/09-icoder-tutorial.md)
-10. [速查与术语](docs/10-reference.md)
+从[文档索引](docs/README.md)开始。
+
+- 入门：[快速开始](docs/quickstart.md) · [核心概念](docs/concepts.md)
+- 子包指南（每个包一篇独立文档，覆盖"是什么、为什么、怎么用、常见问题"）：从 [agent 根包](docs/packages/agent.md) 和 [providers/openaicompat](docs/packages/openaicompat.md) 开始
+- 进阶：[运行循环内部机制](docs/internals.md) · [生产组合模式](docs/production.md) · [iCoder 教程](docs/icoder.md) · [速查表](docs/reference.md)
 
 ## 关键语义
 

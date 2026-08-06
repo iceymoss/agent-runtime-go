@@ -224,7 +224,7 @@ agent-runtime-go
 
 The application persists the current user message and `RunResult.Messages`. The root `Agent` holds no session state and can be shared concurrently across requests.
 
-See the [Quick Start](docs/02-quick-start.md) for the full walkthrough, and [`demo/icoder`](demo/icoder/README.md) for a runnable code-agent reference application.
+See the [Quickstart](docs/quickstart.md) for the full walkthrough, and [`demo/icoder`](demo/icoder/README.md) for a runnable code-agent reference application.
 
 ## Choosing subpackages
 
@@ -250,7 +250,7 @@ Import only what your current requirements need.
 | Readiness and bounded shutdown | `app` |
 | Adapter conformance tests | `agenttest`, test-only |
 
-See the [subpackage guide](docs/07-subpackages.md) for responsibilities, rationale, and minimal compositions.
+Each subpackage has its own guide covering what it is, why it exists, and how to use it; see the [documentation index](docs/README.md).
 
 ## How it works
 
@@ -280,7 +280,7 @@ validate response <- aggregate one model step
 
 The root package reads no environment variables, selects no credentials, connects to no database, and registers no implicit global tools. Those policies belong to the consuming application.
 
-See [runtime internals](docs/05-runtime-internals.md) for detailed execution semantics.
+See [runtime internals](docs/internals.md) for detailed execution semantics.
 
 ## Examples
 
@@ -293,18 +293,11 @@ See [runtime internals](docs/05-runtime-internals.md) for detailed execution sem
 
 ## Documentation
 
-Documentation is currently written in Chinese; the code and API docs are in English.
+Documentation is currently written in Chinese; the code and API docs are in English. Start from the [documentation index](docs/README.md).
 
-1. [Introduction: positioning, capabilities, boundaries](docs/01-introduction.md)
-2. [Quick start: a minimal runnable agent](docs/02-quick-start.md)
-3. [Overview: core concepts and package map](docs/03-overview.md)
-4. [Architecture: ports, adapters, composition](docs/04-architecture.md)
-5. [Runtime internals: the run loop and durable boundaries](docs/05-runtime-internals.md)
-6. [Root package reference](docs/06-root-package.md)
-7. [Subpackage responsibilities and integration guide](docs/07-subpackages.md)
-8. [Production composition patterns](docs/08-production-patterns.md)
-9. [iCoder end-to-end tutorial](docs/09-icoder-tutorial.md)
-10. [Reference and glossary](docs/10-reference.md)
+- Getting started: [Quickstart](docs/quickstart.md) · [Core concepts](docs/concepts.md)
+- Package guides (one document per package, each covering what it is, why it exists, how to use it, and FAQs): see [`docs/packages/`](docs/README.md#子包指南), starting with the [root package](docs/packages/agent.md) and [providers/openaicompat](docs/packages/openaicompat.md)
+- Advanced: [Runtime internals](docs/internals.md) · [Production patterns](docs/production.md) · [iCoder tutorial](docs/icoder.md) · [Reference](docs/reference.md)
 
 ## Key semantics
 

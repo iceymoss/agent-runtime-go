@@ -58,6 +58,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
   border-right: 1px solid var(--line);
 }
 .sidebar-label { margin: 0 0 14px 12px; color: #899590; font: 500 10px ui-monospace, "SFMono-Regular", Consolas, monospace; letter-spacing: .16em; text-transform: uppercase; }
+.sidebar-section + .sidebar-section { margin-top: 28px; }
 .sidebar nav { position: relative; }
 .sidebar nav::before { content: ""; position: absolute; left: 25px; top: 20px; bottom: 20px; width: 1px; background: var(--line); }
 .sidebar nav a { position: relative; display: grid; grid-template-columns: 34px 1fr; gap: 12px; padding: 10px 12px; color: #53615d; text-decoration: none; border: 1px solid transparent; }

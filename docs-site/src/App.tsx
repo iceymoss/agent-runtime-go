@@ -2,11 +2,11 @@ import { isValidElement, useEffect, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeSlug from "rehype-slug";
 import remarkGfm from "remark-gfm";
-import { chapterPath, chapters, documentationLink, type Chapter } from "./docs";
+import { docPath, docs, documentationLink, sections, type Doc } from "./docs";
 
-function currentChapter() {
+function currentDoc() {
   const slug = window.location.pathname.replace(/^\/docs\/?/, "").replace(/\/$/, "");
-  return chapters.find((chapter) => chapter.slug === slug) ?? chapters[0];
+  return docs.find((doc) => doc.slug === slug) ?? docs[0];
 }
 
 function navigate(path: string) {
@@ -69,10 +69,10 @@ function DocLink({ href = "", children }: React.ComponentProps<"a">) {
   );
 }
 
-function MarkdownPage({ chapter }: { chapter: Chapter }) {
+function MarkdownPage({ doc }: { doc: Doc }) {
   return (
     <article className="document">
-      <div className="chapter-stamp" aria-hidden="true">{chapter.index}</div>
+      <div className="chapter-stamp" aria-hidden="true">{doc.index}</div>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeSlug]}
@@ -86,28 +86,28 @@ function MarkdownPage({ chapter }: { chapter: Chapter }) {
           },
         }}
       >
-        {chapter.content}
+        {doc.content}
       </ReactMarkdown>
     </article>
   );
 }
 
 export default function App() {
-  const [chapter, setChapter] = useState(currentChapter);
+  const [doc, setDoc] = useState(currentDoc);
   const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     const onLocation = () => {
-      setChapter(currentChapter());
+      setDoc(currentDoc());
       setMenuOpen(false);
     };
     window.addEventListener("popstate", onLocation);
     return () => window.removeEventListener("popstate", onLocation);
   }, []);
 
-  const chapterIndex = chapters.indexOf(chapter);
-  const previous = chapters[chapterIndex - 1];
-  const next = chapters[chapterIndex + 1];
+  const docIndex = docs.indexOf(doc);
+  const previous = docs[docIndex - 1];
+  const next = docs[docIndex + 1];
 
   return (
     <div className="shell">
@@ -116,43 +116,47 @@ export default function App() {
           <span className="brand-mark">AR</span>
           <span>agent-runtime-go</span>
         </a>
-        <div className="runtime-status"><i /> docs generation <strong>v1</strong></div>
+        <div className="runtime-status"><i /> docs generation <strong>v2</strong></div>
         <a className="source-link" href="https://github.com/iceymoss/agent-runtime-go">GitHub ↗</a>
-        <button className="menu-button" onClick={() => setMenuOpen((open) => !open)} aria-expanded={menuOpen}>章节</button>
+        <button className="menu-button" onClick={() => setMenuOpen((open) => !open)} aria-expanded={menuOpen}>目录</button>
       </header>
 
       <aside className={`sidebar ${menuOpen ? "open" : ""}`}>
-        <div className="sidebar-label">执行路径</div>
-        <nav aria-label="文档章节">
-          {chapters.map((item) => (
-            <a
-              key={item.index}
-              href={chapterPath(item)}
-              className={item === chapter ? "active" : ""}
-              onClick={(event) => { event.preventDefault(); navigate(chapterPath(item)); }}
-            >
-              <span>{item.index}</span>
-              <div><strong>{item.shortTitle}</strong><small>{item.description}</small></div>
-            </a>
-          ))}
-        </nav>
+        {sections.map((section) => (
+          <div key={section.label} className="sidebar-section">
+            <div className="sidebar-label">{section.label}</div>
+            <nav aria-label={section.label}>
+              {section.docs.map((item) => (
+                <a
+                  key={item.index}
+                  href={docPath(item)}
+                  className={item === doc ? "active" : ""}
+                  onClick={(event) => { event.preventDefault(); navigate(docPath(item)); }}
+                >
+                  <span>{item.index}</span>
+                  <div><strong>{item.shortTitle}</strong><small>{item.description}</small></div>
+                </a>
+              ))}
+            </nav>
+          </div>
+        ))}
       </aside>
 
       <main>
         <div className="context-line">
-          <span>package agent</span><b>/</b><span>{chapter.slug || "index"}</span>
+          <span>package agent</span><b>/</b><span>{doc.slug || "index"}</span>
         </div>
-        <MarkdownPage chapter={chapter} />
+        <MarkdownPage doc={doc} />
         <nav className="page-nav" aria-label="上一篇和下一篇">
-          {previous ? <DocLink href={chapterPath(previous)}>← {previous.shortTitle}</DocLink> : <span />}
-          {next ? <DocLink href={chapterPath(next)}>{next.shortTitle} →</DocLink> : <span />}
+          {previous ? <DocLink href={previous.file}>← {previous.shortTitle}</DocLink> : <span />}
+          {next ? <DocLink href={next.file}>{next.shortTitle} →</DocLink> : <span />}
         </nav>
       </main>
 
       <aside className="rail">
-        <div className="rail-block"><span>当前阶段</span><strong>{chapter.index} / 10</strong></div>
-        <div className="rail-track"><i style={{ height: `${Math.max(4, (chapterIndex / (chapters.length - 1)) * 100)}%` }} /></div>
-        <div className="rail-block"><span>阅读目标</span><p>{chapter.description}</p></div>
+        <div className="rail-block"><span>当前位置</span><strong>{docIndex + 1} / {docs.length}</strong></div>
+        <div className="rail-track"><i style={{ height: `${Math.max(4, (docIndex / (docs.length - 1)) * 100)}%` }} /></div>
+        <div className="rail-block"><span>阅读目标</span><p>{doc.description}</p></div>
       </aside>
     </div>
   );
