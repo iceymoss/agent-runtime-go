@@ -5,6 +5,7 @@ English | [简体中文](README.zh-CN.md)
 [![CI](https://github.com/iceymoss/agent-runtime-go/actions/workflows/ci.yml/badge.svg)](https://github.com/iceymoss/agent-runtime-go/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/iceymoss/agent-runtime-go.svg)](https://pkg.go.dev/github.com/iceymoss/agent-runtime-go)
 [![Go Report Card](https://goreportcard.com/badge/github.com/iceymoss/agent-runtime-go)](https://goreportcard.com/report/github.com/iceymoss/agent-runtime-go)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 A composable, provider-agnostic agent runtime for Go.
 
@@ -326,3 +327,7 @@ go vet ./...
 ## Design boundary
 
 The root package `agent` is the portable core and depends on no optional subpackage. Subpackages depend on the root as needed, and the application assembles concrete models, databases, permissions, and business policy in its composition root.
+
+## License
+
+[Apache License 2.0](LICENSE)

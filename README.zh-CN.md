@@ -5,6 +5,7 @@
 [![CI](https://github.com/iceymoss/agent-runtime-go/actions/workflows/ci.yml/badge.svg)](https://github.com/iceymoss/agent-runtime-go/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/iceymoss/agent-runtime-go.svg)](https://pkg.go.dev/github.com/iceymoss/agent-runtime-go)
 [![Go Report Card](https://goreportcard.com/badge/github.com/iceymoss/agent-runtime-go)](https://goreportcard.com/report/github.com/iceymoss/agent-runtime-go)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 一个可组合、与模型供应商无关的 Go Agent runtime。
 
@@ -324,3 +325,7 @@ go vet ./...
 ## 设计边界
 
 根包 `agent` 是 portable Core，不依赖可选子包。子包按需依赖根包，应用在 composition root 中完成具体模型、数据库、权限和业务策略的组装。
+
+## 许可证
+
+[Apache License 2.0](LICENSE)
