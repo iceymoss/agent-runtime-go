@@ -18,15 +18,15 @@ func TestSnapshotV1ExactJSONAndDigestParity(t *testing.T) {
 		SchemaVersion: 1,
 		Identity:      durable.Identity{RunKey: "run-fixture", AgentKey: "agent-fixture", SessionID: "session-fixture", RequestID: "request-fixture"},
 		InputDigest:   "sha256:input", ConfigDigest: "sha256:config", Status: durable.StatusRunning,
-		Phase: durable.PhaseToolsReady, Revision: 9, FenceToken: 4, LeaseOwner: "worker-北京",
+		Phase: durable.PhaseToolsReady, Revision: 9, FenceToken: 4, LeaseOwner: "worker-Zürich",
 		LeaseUntil: time.Date(2026, 8, 1, 1, 2, 3, 456000000, time.FixedZone("fixture", 8*60*60)),
 		Checkpoint: agent.Checkpoint{
-			History: []agent.Message{agent.NewUserMessage("你好")}, NewMessages: []agent.Message{}, CompletedSteps: []agent.StepResult{},
-			PendingToolCalls: []agent.ToolCall{{ID: "call-一", Name: "first", Input: `{"value":1}`}, {ID: "call-二", Name: "second", Input: `{"value":2}`}},
+			History: []agent.Message{agent.NewUserMessage("héllo")}, NewMessages: []agent.Message{}, CompletedSteps: []agent.StepResult{},
+			PendingToolCalls: []agent.ToolCall{{ID: "call-α", Name: "first", Input: `{"value":1}`}, {ID: "call-β", Name: "second", Input: `{"value":2}`}},
 			Outcome:          agent.RunResult{Messages: []agent.Message{}, Steps: []agent.StepResult{}},
 		},
 	}
-	want := []byte(`{"schema_version":1,"identity":{"run_key":"run-fixture","agent_key":"agent-fixture","session_id":"session-fixture","request_id":"request-fixture"},"input_digest":"sha256:input","config_digest":"sha256:config","status":"running","phase":"tools_ready","revision":9,"fence_token":4,"lease_owner":"worker-北京","lease_until":"2026-08-01T01:02:03.456+08:00","checkpoint":{"history":[{"role":"user","parts":[{"type":"text","text":"你好"}]}],"new_messages":[],"completed_steps":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0},"repair_count":0,"next_step":0,"pending_tool_calls":[{"id":"call-一","name":"first","input":"{\"value\":1}"},{"id":"call-二","name":"second","input":"{\"value\":2}"}],"outcome":{"messages":[],"steps":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0},"text":"","stop_reason":"","outcome":""}}}`)
+	want := []byte(`{"schema_version":1,"identity":{"run_key":"run-fixture","agent_key":"agent-fixture","session_id":"session-fixture","request_id":"request-fixture"},"input_digest":"sha256:input","config_digest":"sha256:config","status":"running","phase":"tools_ready","revision":9,"fence_token":4,"lease_owner":"worker-Zürich","lease_until":"2026-08-01T01:02:03.456+08:00","checkpoint":{"history":[{"role":"user","parts":[{"type":"text","text":"héllo"}]}],"new_messages":[],"completed_steps":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0},"repair_count":0,"next_step":0,"pending_tool_calls":[{"id":"call-α","name":"first","input":"{\"value\":1}"},{"id":"call-β","name":"second","input":"{\"value\":2}"}],"outcome":{"messages":[],"steps":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0},"text":"","stop_reason":"","outcome":""}}}`)
 	got, err := durable.MarshalSnapshot(snapshot)
 	if err != nil {
 		t.Fatal(err)

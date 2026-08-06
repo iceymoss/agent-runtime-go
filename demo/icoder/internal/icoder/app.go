@@ -11,6 +11,7 @@ import (
 	"github.com/iceymoss/agent-runtime-go/mcp"
 	"github.com/iceymoss/agent-runtime-go/prompt"
 	"github.com/iceymoss/agent-runtime-go/provider"
+	"github.com/iceymoss/agent-runtime-go/providers/openaicompat"
 	"github.com/iceymoss/agent-runtime-go/skills"
 )
 
@@ -93,7 +94,7 @@ func NewApp(ctx context.Context, config Config) (app *App, resultErr error) {
 		}
 	}()
 
-	model := NewOpenAIModel(config.APIKey, config.BaseURL)
+	model := openaicompat.New(config.BaseURL, config.APIKey)
 	if _, err := buildProviderCatalog(config, model.Capabilities()); err != nil {
 		return nil, err
 	}

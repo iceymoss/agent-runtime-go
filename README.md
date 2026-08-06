@@ -74,6 +74,31 @@ type Model interface {
 
 供应商 adapter 将 `GenerateRequest` 转为上游协议，再把上游响应转换成 canonical `StreamChunk`。完整最小实现见 [`examples/hello`](examples/hello/main.go)。
 
+## 接入真实模型
+
+任何 OpenAI 兼容的 API（OpenAI、DeepSeek、Qwen、Kimi、vLLM、Ollama 等）可以直接使用官方适配器 `providers/openaicompat`，无需自己实现 `Model`：
+
+```go
+import "github.com/iceymoss/agent-runtime-go/providers/openaicompat"
+
+model := openaicompat.New("https://api.deepseek.com/v1", os.Getenv("DEEPSEEK_API_KEY"))
+
+runner, err := agent.New(agent.Config{
+	Key:       "example.assistant",
+	ModelName: "deepseek-chat",
+	MaxSteps:  8,
+}, model, agent.NewRegistry())
+```
+
+适配器默认走 SSE 流式，自动拼装工具调用分片、归一化 usage（含 cache tokens），并把失败分类为 `agent.ModelError`。可选项：
+
+- `openaicompat.WithoutStreaming()`：SSE 不可用的供应商改走非流式请求
+- `openaicompat.WithCapabilities(...)`：声明与默认值不同的能力
+- `openaicompat.WithHeader(k, v)`：附加自定义请求头（如 OpenRouter 归因头）
+- `openaicompat.WithHTTPClient(...)`：自定义超时、代理与传输层
+
+其他协议（如 Anthropic Messages API）仍按 `Model` 接口自行适配。
+
 ## Model/Tool Loop
 
 运行带工具的完整示例：
@@ -93,7 +118,24 @@ user message
   -> model returns the final answer
 ```
 
-工具只需实现三个方法：
+定义工具最简单的方式是泛型 helper `agent.NewTool`，JSON Schema 直接从结构体生成：
+
+```go
+type WeatherInput struct {
+	City string `json:"city" description:"City name"`
+	Days int    `json:"days,omitempty" description:"Forecast days"`
+}
+
+tool := agent.MustNewTool("get_weather", "Get the current weather for a city.",
+	func(ctx context.Context, input WeatherInput) (agent.ToolResult, error) {
+		return agent.ToolResult{Content: lookupWeather(input.City)}, nil
+	})
+
+registry := agent.NewRegistry()
+_ = registry.Register(tool)
+```
+
+非指针且未标 `omitempty` 的字段自动进入 `required`；schema 默认 strict（拒绝未声明字段并回灌给模型修正）。需要完全控制 schema 时，实现 `Tool` 接口即可：
 
 ```go
 type Tool interface {
@@ -169,7 +211,7 @@ agent-runtime-go
 
 应用负责保存当前 user message 和 `RunResult.Messages`。根 `Agent` 自身无会话状态，可以被多个请求并发复用。
 
-更完整的封装步骤见[《封装自己的 Agent》](docs/02-build-your-agent.md)。可运行的 Code Agent reference application 见 [`demo/icoder`](demo/icoder/README.md)。
+完整入门步骤见[《快速开始》](docs/02-quick-start.md)。可运行的 Code Agent reference application 见 [`demo/icoder`](demo/icoder/README.md)。
 
 ## 选择子包
 
@@ -178,6 +220,7 @@ agent-runtime-go
 | 需求 | 使用 |
 |---|---|
 | 一次 model/tool loop | 根包 `agent` |
+| OpenAI 兼容模型接入 | `providers/openaicompat` |
 | 多模型目录与 factory | `provider` |
 | Prompt 模板与版本 | `prompt` |
 | 历史归一化与 token 预算 | `context` |
@@ -194,7 +237,7 @@ agent-runtime-go
 | readiness 与有界 shutdown | `app` |
 | adapter conformance tests | `agenttest`，仅测试使用 |
 
-详细职责、原理和最小组合见[《子包指南》](docs/03-packages.md)。
+详细职责、原理和最小组合见[《子包职责与接入指南》](docs/07-subpackages.md)。
 
 ## 运行原理
 
@@ -224,7 +267,7 @@ validate response <- aggregate one model step
 
 根包不读取环境变量、不选择 credential、不连接数据库，也不隐式注册全局工具。这些策略属于消费方应用。
 
-更详细的执行语义见[《Core 运行原理》](docs/01-core-runtime.md)。
+更详细的执行语义见[《实现原理》](docs/05-runtime-internals.md)。
 
 ## 示例
 
@@ -236,16 +279,16 @@ validate response <- aggregate one model step
 
 ## 文档
 
-1. [Core 运行原理](docs/01-core-runtime.md)
-2. [封装自己的 Agent](docs/02-build-your-agent.md)
-3. [子包指南](docs/03-packages.md)
-4. [Provider adapter](docs/04-provider-adapter.md)
-5. [Tools 与 Permission](docs/05-tools-permission.md)
-6. [Message、Session 与 Durable](docs/06-state-and-durable.md)
-7. [Event 与 Observations](docs/07-events-observations.md)
-8. [Prompt、Context 与 Skills](docs/08-prompt-context-skills.md)
-9. [MCP 与 Sub-Agent](docs/09-mcp-subagent.md)
-10. [生产集成检查表](docs/10-production.md)
+1. [简介：定位、能力与边界](docs/01-introduction.md)
+2. [快速开始：最小可运行 Agent](docs/02-quick-start.md)
+3. [总览：核心概念与包地图](docs/03-overview.md)
+4. [架构：端口、适配器与组合](docs/04-architecture.md)
+5. [实现原理：运行循环与 Durable 边界](docs/05-runtime-internals.md)
+6. [根包核心内容](docs/06-root-package.md)
+7. [子包职责与接入指南](docs/07-subpackages.md)
+8. [生产组合模式](docs/08-production-patterns.md)
+9. [iCoder 端到端教程](docs/09-icoder-tutorial.md)
+10. [速查与术语](docs/10-reference.md)
 
 ## 关键语义
 

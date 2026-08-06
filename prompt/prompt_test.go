@@ -6,19 +6,19 @@ import (
 )
 
 func TestPromptCompileAndRender(t *testing.T) {
-	p, err := New("greeting", `你好，{{.Name}}`)
+	p, err := New("greeting", `Hello, {{.Name}}`)
 	if err != nil {
-		t.Fatalf("New() 报错: %v", err)
+		t.Fatalf("New() failed: %v", err)
 	}
 
-	got, err := p.Render(map[string]any{"Name": "小知"})
+	got, err := p.Render(map[string]any{"Name": "Ava"})
 	if err != nil {
-		t.Fatalf("Render() 报错: %v", err)
+		t.Fatalf("Render() failed: %v", err)
 	}
-	if got != "你好，小知" {
-		t.Fatalf("Render() = %q, 期望 %q", got, "你好，小知")
+	if got != "Hello, Ava" {
+		t.Fatalf("Render() = %q, want %q", got, "Hello, Ava")
 	}
-	if p.Version() != "sha256:ee614f0c5db0ca8109a0253196945c02caa51f4e5e71c73d12e58f1de6f1b4ce" {
+	if p.Version() != "sha256:0d60809d817d973fe6a98d1ea5ec49dee63559d055a3be0645283906d871c926" {
 		t.Fatalf("Version() = %q", p.Version())
 	}
 }
@@ -49,9 +49,9 @@ func TestPromptRejectsInvalidTemplate(t *testing.T) {
 }
 
 func TestPromptRejectsMissingVariable(t *testing.T) {
-	p, err := New("greeting", `你好，{{.Name}}`)
+	p, err := New("greeting", `Hello, {{.Name}}`)
 	if err != nil {
-		t.Fatalf("New() 报错: %v", err)
+		t.Fatalf("New() failed: %v", err)
 	}
 
 	_, err = p.Render(map[string]any{})

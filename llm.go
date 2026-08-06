@@ -6,19 +6,21 @@ import (
 	"fmt"
 )
 
-// 内核哨兵错误。agent-runtime-go 不得 import internal/error_codes（铁律），
-// 故内核只暴露哨兵错误，由业务侧用 errors.Is 映射到 7001-7008 业务码。
+// Core sentinel errors. The runtime exposes only sentinel errors; consuming
+// applications map them to their own error codes with errors.Is.
 var (
-	// ErrAgentConfigInvalid agent 配置非法（如 loop_detect_window > max_steps）。
-	ErrAgentConfigInvalid = errors.New("agent: 配置非法")
-	// ErrToolNotAllowed 工具不在白名单。
-	ErrToolNotAllowed = errors.New("agent: 工具不在白名单")
-	// ErrToolNotFound 工具未注册。
-	ErrToolNotFound = errors.New("agent: 工具未注册")
-	// ErrLoopDetected 检测到工具调用死循环。
-	ErrLoopDetected = errors.New("agent: 检测到工具调用死循环")
-	// ErrToolInputInvalid 工具参数在有限纠错预算内仍不符合 schema。
-	ErrToolInputInvalid = errors.New("agent: 工具参数非法")
+	// ErrAgentConfigInvalid reports an invalid agent configuration
+	// (for example loop_detect_window > max_steps).
+	ErrAgentConfigInvalid = errors.New("agent: invalid configuration")
+	// ErrToolNotAllowed reports a tool that is not on the allowlist.
+	ErrToolNotAllowed = errors.New("agent: tool not allowed")
+	// ErrToolNotFound reports a tool that is not registered.
+	ErrToolNotFound = errors.New("agent: tool not registered")
+	// ErrLoopDetected reports a detected tool call loop.
+	ErrLoopDetected = errors.New("agent: tool call loop detected")
+	// ErrToolInputInvalid reports tool input that still violates the schema
+	// after the bounded repair budget is exhausted.
+	ErrToolInputInvalid = errors.New("agent: invalid tool input")
 )
 
 // Capabilities declares provider-neutral model features. Adapters must reject
@@ -99,22 +101,23 @@ func (c ToolChoice) Validate(tools []ToolDefinition, caps Capabilities) error {
 	return nil
 }
 
-// GenerateRequest 是内核发给 Model 的一次请求（与具体上游协议解耦）。
-// 可选标量字段用指针 + omitempty：nil 省略，*0 照常发送到上游。
+// GenerateRequest is one request the runtime sends to a Model, decoupled from
+// any upstream protocol. Optional scalar fields use pointer + omitempty:
+// nil is omitted while *0 is sent upstream as-is.
 type GenerateRequest struct {
-	// Model 上游模型名（由业务侧按档位 large/small 解析后填入）。
+	// Model is the upstream model name resolved by the application.
 	Model string `json:"model"`
-	// Messages 完整对话历史，含 system 消息。
+	// Messages is the full conversation history, including system messages.
 	Messages []Message `json:"messages"`
-	// Tools 本次可用的工具定义（已过白名单）。
+	// Tools lists the tool definitions available for this request (already allowlisted).
 	Tools []ToolDefinition `json:"tools,omitempty"`
 	// ToolChoice is omitted for portable auto behavior unless explicitly set.
 	ToolChoice *ToolChoice `json:"tool_choice,omitempty"`
-	// Temperature 采样温度。
+	// Temperature is the sampling temperature.
 	Temperature *float64 `json:"temperature,omitempty"`
-	// MaxTokens 单次生成上限。
+	// MaxTokens caps a single generation.
 	MaxTokens *int `json:"max_tokens,omitempty"`
-	// TopP 核采样。
+	// TopP is the nucleus sampling parameter.
 	TopP *float64 `json:"top_p,omitempty"`
 }
 
@@ -155,7 +158,7 @@ func validateImageInputCapability(messages []Message, caps Capabilities) error {
 	return nil
 }
 
-// Usage 是 token 用量。
+// Usage is normalized token usage.
 type Usage struct {
 	PromptTokens        int `json:"prompt_tokens"`
 	CompletionTokens    int `json:"completion_tokens"`
@@ -188,7 +191,7 @@ func (u Usage) InputTokens() int {
 	return u.PromptTokens + u.CacheCreationTokens + u.CacheReadTokens
 }
 
-// Add 累加另一份用量，用于跨步累计。
+// Add accumulates another usage sample, used to total usage across steps.
 func (u *Usage) Add(other Usage) {
 	u.PromptTokens += other.PromptTokens
 	u.CompletionTokens += other.CompletionTokens
@@ -198,19 +201,20 @@ func (u *Usage) Add(other Usage) {
 	u.CacheReadTokens += other.CacheReadTokens
 }
 
-// Response 是模型一步生成的结果。
+// Response is the result of one model generation step.
 type Response struct {
-	// Message 模型产出的 assistant 消息（可能含文本与工具调用）。
+	// Message is the assistant message produced by the model
+	// (it may contain text and tool calls).
 	Message Message `json:"message"`
-	// Usage 本步用量。
+	// Usage is the usage for this step.
 	Usage Usage `json:"usage"`
-	// FinishReason 停止原因。
+	// FinishReason is the reason generation stopped.
 	FinishReason FinishReason `json:"finish_reason"`
-	// ModelName 实际使用的模型名，成本核算用。
+	// ModelName is the model actually used, for cost accounting.
 	ModelName string `json:"model_name,omitempty"`
 }
 
-// ToolCalls 返回本步的工具调用。
+// ToolCalls returns the tool calls made in this step.
 func (r *Response) ToolCalls() []ToolCall { return r.Message.ToolCalls() }
 
 // ValidateResponse validates a provider's terminal response before the runtime
@@ -278,44 +282,49 @@ func validateEffectiveToolChoice(choice ToolChoice, response *Response) error {
 	return nil
 }
 
-// StreamChunk 是流式响应的一个增量片段。
-// 适配器负责把上游的分片（OpenAI 按 index 归组、Anthropic 按 content_block 缓冲
-// input_json_delta）拼装成完整的 ToolCall 后再发出 ChunkToolCall。
+// StreamChunk is one incremental fragment of a streamed response.
+// Adapters are responsible for assembling upstream fragments (OpenAI groups by
+// index, Anthropic buffers input_json_delta per content_block) into a complete
+// ToolCall before emitting ChunkToolCall.
 type StreamChunk struct {
 	Type ChunkType `json:"type"`
-	// TextDelta 仅 Type=ChunkText 时有效。
+	// TextDelta is valid only when Type=ChunkText.
 	TextDelta string `json:"text_delta,omitempty"`
-	// ToolCall 仅 Type=ChunkToolCall 时有效，且参数已拼接完整。
+	// ToolCall is valid only when Type=ChunkToolCall; its input is fully assembled.
 	ToolCall *ToolCall `json:"tool_call,omitempty"`
-	// Response 仅 Type=ChunkFinish 时有效，含完整消息与归一后的用量。
+	// Response is valid only when Type=ChunkFinish; it carries the complete
+	// message and normalized usage.
 	Response *Response `json:"response,omitempty"`
-	// Err 仅 Type=ChunkError 时有效，原样携带上游错误信息，不得吞掉。
+	// Err is valid only when Type=ChunkError. It carries the upstream error
+	// as-is and must never be swallowed.
 	Err error `json:"-"`
 }
 
-// ChunkType 是流式片段类型。
+// ChunkType is the streamed fragment type.
 type ChunkType string
 
 const (
-	// ChunkText 文本增量。
+	// ChunkText is a text delta.
 	ChunkText ChunkType = "text"
-	// ChunkToolCall 一个已拼装完整的工具调用。
+	// ChunkToolCall is one fully assembled tool call.
 	ChunkToolCall ChunkType = "tool_call"
-	// ChunkFinish 本步结束，携带完整 Response。
+	// ChunkFinish ends the step and carries the complete Response.
 	ChunkFinish ChunkType = "finish"
-	// ChunkError 出错，携带上游原始错误。
+	// ChunkError reports a failure and carries the original upstream error.
 	ChunkError ChunkType = "error"
 )
 
-// Model 是大模型接入接口。实现放在 internal/relay/channel（依赖倒置：
-// agent-runtime-go 只定接口，adapter 反向实现，内核才拿得出去）。
+// Model is the provider integration port. agent-runtime-go defines only this
+// interface; adapters implement it in the consuming application, keeping the
+// core portable (dependency inversion).
 type Model interface {
-	// Name 返回 provider 标识。
+	// Name returns the provider identifier.
 	Name() string
 	// Capabilities returns a coherent provider capability declaration.
 	Capabilities() Capabilities
-	// Stream 流式生成一步。实现必须在返回前或流末尾关闭 channel，
-	// 上游出错时先发 ChunkError 再关闭，错误信息原样传播。
+	// Stream generates one step as a stream. Implementations must close the
+	// channel before returning or at end of stream. On upstream failure, send
+	// ChunkError first and then close; propagate the error message as-is.
 	Stream(ctx context.Context, req *GenerateRequest) (<-chan StreamChunk, error)
 }
 

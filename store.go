@@ -7,7 +7,7 @@ import (
 )
 
 // ErrSessionNotFound indicates that a runtime session does not exist.
-var ErrSessionNotFound = errors.New("agent: 会话不存在")
+var ErrSessionNotFound = errors.New("agent: session not found")
 
 // SessionStatus is the generic runtime session lifecycle.
 type SessionStatus string
@@ -70,7 +70,7 @@ func (s *MemoryStore) CreateSession(_ context.Context, session Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.sessions[session.ID]; exists {
-		return errors.New("agent: 会话已存在")
+		return errors.New("agent: session already exists")
 	}
 	s.sessions[session.ID] = session
 	return nil

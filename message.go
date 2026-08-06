@@ -10,29 +10,29 @@ import (
 	"strings"
 )
 
-// Role 是消息角色。
+// Role is the message role.
 type Role string
 
 const (
-	// RoleSystem 系统提示词。
+	// RoleSystem is the system prompt.
 	RoleSystem Role = "system"
-	// RoleUser 用户输入。
+	// RoleUser is user input.
 	RoleUser Role = "user"
-	// RoleAssistant 模型输出（可能带工具调用）。
+	// RoleAssistant is model output, possibly with tool calls.
 	RoleAssistant Role = "assistant"
-	// RoleTool 工具执行结果，回灌给模型。
+	// RoleTool carries tool execution results fed back to the model.
 	RoleTool Role = "tool"
 )
 
-// PartType 是消息内容块类型。
+// PartType is the message content part type.
 type PartType string
 
 const (
-	// PartText 纯文本块。
+	// PartText is a plain text part.
 	PartText PartType = "text"
-	// PartToolCall 模型发起的工具调用块。
+	// PartToolCall is a tool call initiated by the model.
 	PartToolCall PartType = "tool_call"
-	// PartToolResult 工具执行结果块。
+	// PartToolResult is a tool execution result.
 	PartToolResult PartType = "tool_result"
 	// PartImage is a provider-neutral user image input.
 	PartImage PartType = "image"
@@ -49,79 +49,84 @@ type ImageContent struct {
 	SizeBytes int64  `json:"size_bytes,omitempty"`
 }
 
-// ContentPart 是消息的一个内容块。
-// 一条 assistant 消息可能同时含文本与多个工具调用，故用块列表而非单一字符串。
+// ContentPart is one content part of a message.
+// An assistant message may contain text and several tool calls at once, hence
+// a part list instead of a single string.
 type ContentPart struct {
 	Type PartType `json:"type"`
-	// Text 仅 Type=PartText 时有效。
+	// Text is valid only when Type=PartText.
 	Text string `json:"text,omitempty"`
-	// ToolCall 仅 Type=PartToolCall 时有效。
+	// ToolCall is valid only when Type=PartToolCall.
 	ToolCall *ToolCall `json:"tool_call,omitempty"`
-	// ToolResult 仅 Type=PartToolResult 时有效。
+	// ToolResult is valid only when Type=PartToolResult.
 	ToolResult *ToolResult `json:"tool_result,omitempty"`
 	// Image is valid only when Type=PartImage.
 	Image *ImageContent `json:"image,omitempty"`
 }
 
-// ToolCall 是模型发起的一次工具调用。
+// ToolCall is one tool call initiated by the model.
 type ToolCall struct {
-	// ID 上游给出的调用标识，用于与 ToolResult 配对。
+	// ID is the upstream call identifier, used to pair with a ToolResult.
 	ID string `json:"id"`
-	// Name 工具名。
+	// Name is the tool name.
 	Name string `json:"name"`
-	// Input 原始参数 JSON。不预先解析：可能非法，需回灌错误给模型自我修正。
+	// Input is the raw input JSON. It is not parsed eagerly: it may be invalid,
+	// and the error is fed back so the model can correct itself.
 	Input string `json:"input"`
 }
 
-// ToolResult 是一次工具调用的执行结果。
+// ToolResult is the execution result of one tool call.
 type ToolResult struct {
-	// ToolCallID 对应的 ToolCall.ID。
+	// ToolCallID references the matching ToolCall.ID.
 	ToolCallID string `json:"tool_call_id"`
-	// Name 工具名，便于日志与事件展示。
+	// Name is the tool name, useful for logs and events.
 	Name string `json:"name"`
-	// Content 结果内容，回灌给模型的文本（结构化结果自行序列化为 JSON 字符串）。
+	// Content is the result text fed back to the model. Serialize structured
+	// results to a JSON string yourself.
 	Content string `json:"content"`
-	// IsError 标记该结果是错误（参数非法、工具不可用、执行失败）。
-	// 错误同样回灌给模型，给它换路或自我修正的机会。
+	// IsError marks the result as an error (invalid input, unavailable tool,
+	// or execution failure). Errors are also fed back to the model so it can
+	// change course or correct itself.
 	IsError bool `json:"is_error,omitempty"`
-	// StopTurn 为 true 时立即收尾本轮，不再进入下一步。
+	// StopTurn, when true, ends the turn immediately without another step.
 	StopTurn bool `json:"stop_turn,omitempty"`
 }
 
-// Message 是一条对话消息。
+// Message is one conversation message.
 type Message struct {
 	Role Role `json:"role"`
-	// Parts 内容块列表。
+	// Parts is the list of content parts.
 	Parts []ContentPart `json:"parts"`
-	// FinishReason 仅 assistant 消息有意义：stop/tool_calls/length/error。
+	// FinishReason is meaningful only for assistant messages:
+	// stop/tool_calls/length/error.
 	FinishReason FinishReason `json:"finish_reason,omitempty"`
 }
 
-// FinishReason 是模型停止生成的原因。
+// FinishReason is the reason the model stopped generating.
 type FinishReason string
 
 const (
-	// FinishStop 正常结束。
+	// FinishStop is a normal finish.
 	FinishStop FinishReason = "stop"
-	// FinishToolCalls 因发起工具调用而停止。
+	// FinishToolCalls means generation stopped to make tool calls.
 	FinishToolCalls FinishReason = "tool_calls"
-	// FinishLength 达到长度上限。
+	// FinishLength means the length limit was reached.
 	FinishLength FinishReason = "length"
-	// FinishError 出错中断。
+	// FinishError means generation was interrupted by an error.
 	FinishError FinishReason = "error"
 )
 
-// NewSystemMessage 构造系统消息。
+// NewSystemMessage builds a system message.
 func NewSystemMessage(text string) Message {
 	return Message{Role: RoleSystem, Parts: []ContentPart{{Type: PartText, Text: text}}}
 }
 
-// NewUserMessage 构造用户消息。
+// NewUserMessage builds a user message.
 func NewUserMessage(text string) Message {
 	return Message{Role: RoleUser, Parts: []ContentPart{{Type: PartText, Text: text}}}
 }
 
-// NewAssistantMessage 构造纯文本 assistant 消息。
+// NewAssistantMessage builds a text-only assistant message.
 func NewAssistantMessage(text string) Message {
 	return Message{
 		Role:         RoleAssistant,
@@ -130,7 +135,7 @@ func NewAssistantMessage(text string) Message {
 	}
 }
 
-// NewToolMessage 把一批工具结果包成一条 tool 消息。
+// NewToolMessage wraps a batch of tool results into one tool message.
 func NewToolMessage(results ...ToolResult) Message {
 	parts := make([]ContentPart, 0, len(results))
 	for i := range results {
@@ -139,7 +144,7 @@ func NewToolMessage(results ...ToolResult) Message {
 	return Message{Role: RoleTool, Parts: parts}
 }
 
-// Text 拼接消息里所有文本块。
+// Text concatenates all text parts of the message.
 func (m Message) Text() string {
 	var b strings.Builder
 	for _, p := range m.Parts {
@@ -150,7 +155,7 @@ func (m Message) Text() string {
 	return b.String()
 }
 
-// ToolCalls 返回消息里的所有工具调用。
+// ToolCalls returns all tool calls in the message.
 func (m Message) ToolCalls() []ToolCall {
 	var calls []ToolCall
 	for _, p := range m.Parts {
@@ -161,7 +166,7 @@ func (m Message) ToolCalls() []ToolCall {
 	return calls
 }
 
-// ToolResults 返回消息里的所有工具结果。
+// ToolResults returns all tool results in the message.
 func (m Message) ToolResults() []ToolResult {
 	var results []ToolResult
 	for _, p := range m.Parts {

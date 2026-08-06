@@ -67,7 +67,7 @@ func moduleRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("os.Getwd() 报错: %v", err)
+		t.Fatalf("os.Getwd() failed: %v", err)
 	}
 	for {
 		data, readErr := os.ReadFile(filepath.Join(dir, "go.mod"))

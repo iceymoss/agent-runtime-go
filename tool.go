@@ -11,18 +11,19 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-// ToolDefinition 是发给模型的工具声明。
+// ToolDefinition is the tool declaration sent to the model.
 type ToolDefinition struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
-	// Parameters JSON Schema（对象形式），由适配器转成上游要求的结构。
+	// Parameters is a JSON Schema in object form; adapters convert it to the
+	// structure the upstream provider requires.
 	Parameters map[string]any `json:"parameters"`
 	// Strict rejects properties not declared by an object schema unless the
 	// schema already specifies its own additionalProperties behavior.
 	Strict bool `json:"strict,omitempty"`
 }
 
-// Tool 是一个可被模型调用的工具。
+// Tool is a tool the model can call.
 // Implementations belong to the consuming application; the runtime only uses this interface.
 type Tool interface {
 	// Definition returns the model-visible declaration.
@@ -62,7 +63,8 @@ const (
 	ReplayPolicyResolve    ReplayPolicy = "resolve"
 )
 
-// Registry 是工具注册表，支持并发读写（内核可能在多会话间共享一个 Registry）。
+// Registry is a concurrency-safe tool registry. One Registry may be shared
+// across sessions.
 type Registry struct {
 	mu    sync.RWMutex
 	tools map[string]registeredTool
@@ -77,7 +79,7 @@ type registeredTool struct {
 	executableVersionDeclared bool
 }
 
-// NewRegistry 创建空注册表。
+// NewRegistry creates an empty registry.
 func NewRegistry() *Registry {
 	return &Registry{tools: make(map[string]registeredTool)}
 }
@@ -116,7 +118,7 @@ func (r *Registry) Replace(t Tool) error {
 
 func prepareRegisteredTool(t Tool) (registeredTool, error) {
 	if t == nil {
-		return registeredTool{}, fmt.Errorf("%w: 工具为 nil", ErrAgentConfigInvalid)
+		return registeredTool{}, fmt.Errorf("%w: tool is nil", ErrAgentConfigInvalid)
 	}
 	definition, err := normalizeToolDefinition(t.Definition())
 	if err != nil {
@@ -124,7 +126,7 @@ func prepareRegisteredTool(t Tool) (registeredTool, error) {
 	}
 	name := definition.Name
 	if name == "" {
-		return registeredTool{}, fmt.Errorf("%w: 工具名为空", ErrAgentConfigInvalid)
+		return registeredTool{}, fmt.Errorf("%w: tool name is empty", ErrAgentConfigInvalid)
 	}
 	schema, err := compileToolSchema(definition)
 	if err != nil {
@@ -147,7 +149,7 @@ func normalizeReplayPolicy(policy ReplayPolicy) ReplayPolicy {
 	}
 }
 
-// Get 按名字取工具。
+// Get returns a tool by name.
 func (r *Registry) Get(name string) (Tool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -171,13 +173,13 @@ func validateToolInput(entry registeredTool, input string) error {
 		input = "{}"
 	}
 	if err := json.Unmarshal([]byte(input), &value); err != nil {
-		return fmt.Errorf("参数不是合法 JSON 对象: %w", err)
+		return fmt.Errorf("input is not a valid JSON object: %w", err)
 	}
 	if _, ok := value.(map[string]any); !ok {
-		return fmt.Errorf("参数不是合法 JSON 对象")
+		return fmt.Errorf("input is not a valid JSON object")
 	}
 	if err := entry.schema.Validate(value); err != nil {
-		return fmt.Errorf("参数不符合 JSON Schema: %w", err)
+		return fmt.Errorf("input does not conform to the JSON Schema: %w", err)
 	}
 	return nil
 }
@@ -285,7 +287,7 @@ func cloneJSONValue(value any) any {
 	}
 }
 
-// Names 返回已注册的工具名（排序，便于测试与日志稳定）。
+// Names returns the registered tool names, sorted for stable tests and logs.
 func (r *Registry) Names() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -327,13 +329,14 @@ func (s *ToolSet) validate(name, input string) error {
 	return validateToolInput(entry, input)
 }
 
-// NewToolSet 按白名单构造工具集。
-// allowed 为 nil 时不限制；为空切片时表示不允许任何工具。
-// 白名单里列了但注册表没有的工具直接返回 ErrToolNotFound —— 装配期暴露配置错误，
-// 比运行期让模型撞上「工具不可用」要好。
+// NewToolSet builds a tool set from an allowlist.
+// A nil allowed slice means no restriction; an empty slice allows no tools.
+// A name that is allowlisted but not registered returns ErrToolNotFound:
+// exposing the configuration error at assembly time beats letting the model
+// hit an unavailable tool at runtime.
 func NewToolSet(registry *Registry, allowed []string) (*ToolSet, error) {
 	if registry == nil {
-		return nil, fmt.Errorf("%w: registry 为 nil", ErrAgentConfigInvalid)
+		return nil, fmt.Errorf("%w: registry is nil", ErrAgentConfigInvalid)
 	}
 	registry.mu.RLock()
 	defer registry.mu.RUnlock()
@@ -418,14 +421,15 @@ func (s *ToolSet) replayPolicy(name string) ReplayPolicy {
 	return entry.replayPolicy
 }
 
-// Allowed 判断工具是否在白名单内。
+// Allowed reports whether the tool is on the allowlist.
 func (s *ToolSet) Allowed(name string) bool {
 	_, ok := s.tools[name]
 	return ok
 }
 
-// Get 取白名单内的工具。工具存在但不在白名单时返回 ErrToolNotAllowed，
-// 调用方据此回灌「工具不可用」而不是中断整轮。
+// Get returns an allowlisted tool. If the tool exists but is not allowlisted,
+// it returns ErrToolNotAllowed; callers feed a "tool unavailable" result back
+// to the model instead of aborting the run.
 func (s *ToolSet) Get(name string) (Tool, error) {
 	if !s.Allowed(name) {
 		return nil, fmt.Errorf("%w: %s", ErrToolNotAllowed, name)
@@ -433,7 +437,8 @@ func (s *ToolSet) Get(name string) (Tool, error) {
 	return s.tools[name].tool, nil
 }
 
-// Definitions 返回发给模型的工具声明列表（按名字排序，保证请求可复现）。
+// Definitions returns the tool declarations sent to the model, sorted by name
+// so requests stay reproducible.
 func (s *ToolSet) Definitions() []ToolDefinition {
 	names := make([]string, 0, len(s.tools))
 	for name := range s.tools {

@@ -134,18 +134,18 @@ func TestRunSnapshotV1ExactFixtures(t *testing.T) {
 		snapshot := emptyFixtureRunSnapshot(RunStatusRunning, RunPhaseToolsReady)
 		snapshot.Revision = 9
 		snapshot.FenceToken = 4
-		snapshot.LeaseOwner = "worker-北京"
+		snapshot.LeaseOwner = "worker-Zürich"
 		snapshot.LeaseUntil = time.Date(2026, 8, 1, 1, 2, 3, 456000000, time.FixedZone("fixture", 8*60*60))
-		snapshot.Checkpoint.History = []Message{NewUserMessage("你好")}
+		snapshot.Checkpoint.History = []Message{NewUserMessage("héllo")}
 		snapshot.Checkpoint.NewMessages = []Message{}
 		snapshot.Checkpoint.CompletedSteps = []StepResult{}
 		snapshot.Checkpoint.PendingToolCalls = []ToolCall{
-			{ID: "call-一", Name: "first", Input: `{"value":1}`},
-			{ID: "call-二", Name: "second", Input: `{"value":2}`},
+			{ID: "call-α", Name: "first", Input: `{"value":1}`},
+			{ID: "call-β", Name: "second", Input: `{"value":2}`},
 		}
 		snapshot.Checkpoint.Outcome.Messages = []Message{}
 		snapshot.Checkpoint.Outcome.Steps = []StepResult{}
-		want := []byte(`{"schema_version":1,"identity":{"run_key":"run-fixture","agent_key":"agent-fixture","session_id":"session-fixture","request_id":"request-fixture"},"input_digest":"sha256:input","config_digest":"sha256:config","status":"running","phase":"tools_ready","revision":9,"fence_token":4,"lease_owner":"worker-北京","lease_until":"2026-08-01T01:02:03.456+08:00","checkpoint":{"history":[{"role":"user","parts":[{"type":"text","text":"你好"}]}],"new_messages":[],"completed_steps":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0},"repair_count":0,"next_step":0,"pending_tool_calls":[{"id":"call-一","name":"first","input":"{\"value\":1}"},{"id":"call-二","name":"second","input":"{\"value\":2}"}],"outcome":{"messages":[],"steps":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0},"text":"","stop_reason":"","outcome":""}}}`)
+		want := []byte(`{"schema_version":1,"identity":{"run_key":"run-fixture","agent_key":"agent-fixture","session_id":"session-fixture","request_id":"request-fixture"},"input_digest":"sha256:input","config_digest":"sha256:config","status":"running","phase":"tools_ready","revision":9,"fence_token":4,"lease_owner":"worker-Zürich","lease_until":"2026-08-01T01:02:03.456+08:00","checkpoint":{"history":[{"role":"user","parts":[{"type":"text","text":"héllo"}]}],"new_messages":[],"completed_steps":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0},"repair_count":0,"next_step":0,"pending_tool_calls":[{"id":"call-α","name":"first","input":"{\"value\":1}"},{"id":"call-β","name":"second","input":"{\"value\":2}"}],"outcome":{"messages":[],"steps":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0},"text":"","stop_reason":"","outcome":""}}}`)
 		assertRunSnapshotFixture(t, snapshot, want)
 	})
 }
@@ -156,18 +156,18 @@ func TestToolExecutionV1ExactFixtures(t *testing.T) {
 		result *ToolResult
 		want   string
 	}{
-		{status: ToolExecutionPrepared, want: `{"run_key":"run-工具","step_number":2,"ordinal":1,"tool_call":{"id":"call-1","name":"lookup","input":"{\"城市\":\"北京\"}"},"idempotency_key":"tool:key","input_hash":"sha256:input","status":"prepared"}`},
-		{status: ToolExecutionExecuting, want: `{"run_key":"run-工具","step_number":2,"ordinal":1,"tool_call":{"id":"call-1","name":"lookup","input":"{\"城市\":\"北京\"}"},"idempotency_key":"tool:key","input_hash":"sha256:input","status":"executing"}`},
-		{status: ToolExecutionCompleted, result: &ToolResult{ToolCallID: "call-1", Name: "lookup", Content: "晴天"}, want: `{"run_key":"run-工具","step_number":2,"ordinal":1,"tool_call":{"id":"call-1","name":"lookup","input":"{\"城市\":\"北京\"}"},"idempotency_key":"tool:key","input_hash":"sha256:input","status":"completed","result":{"tool_call_id":"call-1","name":"lookup","content":"晴天"}}`},
-		{status: ToolExecutionUnknown, want: `{"run_key":"run-工具","step_number":2,"ordinal":1,"tool_call":{"id":"call-1","name":"lookup","input":"{\"城市\":\"北京\"}"},"idempotency_key":"tool:key","input_hash":"sha256:input","status":"unknown"}`},
+		{status: ToolExecutionPrepared, want: `{"run_key":"run-tool","step_number":2,"ordinal":1,"tool_call":{"id":"call-1","name":"lookup","input":"{\"cîty\":\"Zürich\"}"},"idempotency_key":"tool:key","input_hash":"sha256:input","status":"prepared"}`},
+		{status: ToolExecutionExecuting, want: `{"run_key":"run-tool","step_number":2,"ordinal":1,"tool_call":{"id":"call-1","name":"lookup","input":"{\"cîty\":\"Zürich\"}"},"idempotency_key":"tool:key","input_hash":"sha256:input","status":"executing"}`},
+		{status: ToolExecutionCompleted, result: &ToolResult{ToolCallID: "call-1", Name: "lookup", Content: "sunny"}, want: `{"run_key":"run-tool","step_number":2,"ordinal":1,"tool_call":{"id":"call-1","name":"lookup","input":"{\"cîty\":\"Zürich\"}"},"idempotency_key":"tool:key","input_hash":"sha256:input","status":"completed","result":{"tool_call_id":"call-1","name":"lookup","content":"sunny"}}`},
+		{status: ToolExecutionUnknown, want: `{"run_key":"run-tool","step_number":2,"ordinal":1,"tool_call":{"id":"call-1","name":"lookup","input":"{\"cîty\":\"Zürich\"}"},"idempotency_key":"tool:key","input_hash":"sha256:input","status":"unknown"}`},
 	}
 	for _, tt := range statuses {
 		t.Run(string(tt.status), func(t *testing.T) {
 			execution := ToolExecution{
-				RunKey:         "run-工具",
+				RunKey:         "run-tool",
 				StepNumber:     2,
 				Ordinal:        1,
-				ToolCall:       ToolCall{ID: "call-1", Name: "lookup", Input: `{"城市":"北京"}`},
+				ToolCall:       ToolCall{ID: "call-1", Name: "lookup", Input: `{"cîty":"Zürich"}`},
 				IdempotencyKey: "tool:key",
 				InputHash:      "sha256:input",
 				Status:         tt.status,

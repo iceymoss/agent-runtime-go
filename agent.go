@@ -9,26 +9,30 @@ import (
 	"time"
 )
 
-// Config 是装配一个 agent 所需的配置（业务侧从 agents.yaml 读出后填入）。
+// Config is the configuration needed to assemble one agent. Applications
+// typically load it from their own configuration source.
 type Config struct {
 	// Key identifies the agent, for example assistant.support.
 	Key string
-	// ModelName 上游模型名（档位已解析）。
+	// ModelName is the resolved upstream model name.
 	ModelName string
-	// MaxSteps 单轮最多几步 tool-calling。
+	// MaxSteps caps tool-calling steps within a single run.
 	MaxSteps int
-	// AllowedTools 工具白名单；nil 表示不限制。
+	// AllowedTools is the tool allowlist; nil means no restriction.
 	AllowedTools []string
-	// LoopDetectWindow / LoopDetectThreshold 死循环检测参数，<=0 取默认值。
+	// LoopDetectWindow / LoopDetectThreshold configure loop detection;
+	// values <= 0 use the defaults.
 	LoopDetectWindow    int
 	LoopDetectThreshold int
-	// ContextWindow 模型上下文窗口大小；0 表示未知，不做预算判定。
+	// ContextWindow is the model context window size; 0 means unknown and
+	// disables budget checks.
 	ContextWindow int
-	// Temperature / MaxTokens 采样参数，可选。
+	// Temperature / MaxTokens / TopP are optional sampling parameters.
 	Temperature *float64
 	MaxTokens   *int
 	TopP        *float64
-	// StopConditions 额外的终止条件，与默认的 StepCountIs(MaxSteps) 叠加。
+	// StopConditions are additional stop conditions, stacked on top of the
+	// default StepCountIs(MaxSteps).
 	StopConditions []StopCondition
 	// ToolChoice is the default portable tool selection behavior.
 	ToolChoice *ToolChoice
@@ -43,7 +47,8 @@ const (
 	toolRepairLimitDocumentation = "number of invalid tool calls allowed before failure"
 )
 
-// Agent 是装配好的 agent 实例，可复用于多轮/多会话（自身无会话状态）。
+// Agent is an assembled agent instance. It holds no session state and can be
+// reused across turns and sessions.
 type Agent struct {
 	cfg      Config
 	model    Model
@@ -53,11 +58,12 @@ type Agent struct {
 	stop     StopCondition
 }
 
-// New 装配一个 agent。装配期就把配置问题暴露出来：
-// 死循环检测窗口大于 max_steps 会让检测静默失效，必须直接失败。
+// New assembles an agent. Configuration problems surface at assembly time:
+// a loop detection window larger than max_steps would silently disable
+// detection, so it must fail immediately.
 func New(cfg Config, model Model, registry *Registry) (*Agent, error) {
 	if model == nil {
-		return nil, fmt.Errorf("%w: model 为 nil", ErrAgentConfigInvalid)
+		return nil, fmt.Errorf("%w: model is nil", ErrAgentConfigInvalid)
 	}
 	tools, err := NewToolSet(registry, cfg.AllowedTools)
 	if err != nil {
@@ -71,7 +77,7 @@ func newAgent(cfg Config, model Model, tools *ToolSet, caps Capabilities) (*Agen
 		return nil, fmt.Errorf("%w: model or tool snapshot is nil", ErrAgentConfigInvalid)
 	}
 	if cfg.MaxSteps <= 0 {
-		return nil, fmt.Errorf("%w: max_steps 必须大于 0", ErrAgentConfigInvalid)
+		return nil, fmt.Errorf("%w: max_steps must be greater than 0", ErrAgentConfigInvalid)
 	}
 	if err := caps.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: model capabilities: %w", ErrAgentConfigInvalid, err)
@@ -102,25 +108,26 @@ func newAgent(cfg Config, model Model, tools *ToolSet, caps Capabilities) (*Agen
 	}, nil
 }
 
-// Key 返回 agent 标识。
+// Key returns the agent identifier.
 func (a *Agent) Key() string { return a.cfg.Key }
 
 // ContextWindow returns the configured model context capacity.
 func (a *Agent) ContextWindow() int { return a.cfg.ContextWindow }
 
-// RunResult 是一轮 Run 的结果。
+// RunResult is the result of one Run.
 type RunResult struct {
-	// Messages 本轮新增的消息（assistant / tool），供业务落库。
+	// Messages contains the messages added during this run (assistant / tool),
+	// for the application to persist.
 	Messages []Message `json:"messages"`
-	// Steps 每步详情。
+	// Steps contains per-step details.
 	Steps []StepResult `json:"steps"`
-	// Usage 本轮累计用量。
+	// Usage is the accumulated usage for this run.
 	Usage Usage `json:"usage"`
-	// Text 最终答复文本（最后一步的文本）。
+	// Text is the final answer text (the text of the last step).
 	Text string `json:"text"`
-	// StopReason 结束原因，便于调优与排障。
+	// StopReason explains why the run ended, for tuning and troubleshooting.
 	StopReason StopReason `json:"stop_reason"`
-	// ModelName 实际使用的模型名。
+	// ModelName is the model actually used.
 	ModelName string `json:"model_name,omitempty"`
 	// Outcome distinguishes complete answers, resumable interruption, and failure.
 	Outcome Outcome `json:"outcome"`
@@ -237,21 +244,21 @@ func ValidateRunRequestCapabilities(req RunRequest, caps Capabilities) error {
 	return validateImageInputCapability(req.Messages, caps)
 }
 
-// StopReason 是一轮结束的原因。
+// StopReason is the reason a run ended.
 type StopReason string
 
 const (
-	// StopReasonComplete 模型不再调工具，正常收尾。
+	// StopReasonComplete means the model stopped calling tools and finished normally.
 	StopReasonComplete StopReason = "complete"
-	// StopReasonMaxSteps 达到最大步数强制收尾。
+	// StopReasonMaxSteps means the maximum step count forced the run to end.
 	StopReasonMaxSteps StopReason = "max_steps"
-	// StopReasonStopCondition 命中终止条件。
+	// StopReasonStopCondition means a stop condition matched.
 	StopReasonStopCondition StopReason = "stop_condition"
-	// StopReasonToolStopTurn 工具要求立即收尾。
+	// StopReasonToolStopTurn means a tool requested an immediate end of turn.
 	StopReasonToolStopTurn StopReason = "tool_stop_turn"
-	// StopReasonLoopDetected 检测到死循环。
+	// StopReasonLoopDetected means a tool call loop was detected.
 	StopReasonLoopDetected StopReason = "loop_detected"
-	// StopReasonContextBudget 上下文预算见底。
+	// StopReasonContextBudget means the context budget was exhausted.
 	StopReasonContextBudget StopReason = "context_budget"
 	// StopReasonOutputLimit indicates the provider reached its generation limit.
 	StopReasonOutputLimit StopReason = "output_limit"
@@ -274,7 +281,7 @@ func (a *Agent) Run(ctx context.Context, request RunRequest) (result *RunResult,
 	if err := ValidateRunRequestCapabilities(request, a.caps); err != nil {
 		return result, err
 	}
-	// 复制一份，避免污染调用方的切片。
+	// Copy to avoid mutating the caller's slice.
 	history := cloneMessages(request.Messages)
 
 	repairErrors := 0
@@ -290,7 +297,7 @@ func (a *Agent) Run(ctx context.Context, request RunRequest) (result *RunResult,
 		}
 		resp, err := a.streamStep(ctx, next, observer)
 		if err != nil {
-			// 上游错误原样传播，不吞细节。
+			// Propagate upstream errors as-is; never swallow details.
 			return result, err
 		}
 
@@ -309,7 +316,7 @@ func (a *Agent) Run(ctx context.Context, request RunRequest) (result *RunResult,
 			FinishReason: resp.FinishReason,
 		}
 
-		// 只有 stop 且没有工具调用才是完整最终答复。
+		// Only a stop finish without tool calls is a complete final answer.
 		if resp.FinishReason == FinishStop {
 			result.Text = resp.Message.Text()
 			result.Steps = append(result.Steps, stepResult)
@@ -343,29 +350,34 @@ func (a *Agent) Run(ctx context.Context, request RunRequest) (result *RunResult,
 			return result, err
 		}
 
-		// 工具要求收尾（如用户拒绝授权），立即结束。
+		// A tool requested end of turn (for example the user denied
+		// authorization); finish immediately.
 		if stopTurn {
 			result.StopReason = StopReasonToolStopTurn
 			result.Outcome = OutcomeCompleted
 			return result, nil
 		}
 
-		// 死循环检测：模型可能反复用同样参数调同一个工具，把步数烧完却毫无进展。
+		// Loop detection: the model may repeatedly call the same tool with the
+		// same input, burning steps without making progress.
 		if sig, count, detected := a.detector.Detect(result.Steps); detected {
 			result.StopReason = StopReasonLoopDetected
-			err := fmt.Errorf("%w: 签名 %s 重复 %d 次", ErrLoopDetected, sig, count)
+			err := fmt.Errorf("%w: signature %s repeated %d times", ErrLoopDetected, sig, count)
 			return result, err
 		}
 
-		// 上下文占用取最新请求的 prompt tokens；累计 billed usage 不能表示窗口占用。
+		// Context occupancy uses the latest request's prompt tokens; accumulated
+		// billed usage cannot represent window occupancy.
 		if ContextBudgetExceeded(a.cfg.ContextWindow, resp.Usage.InputTokens()) {
 			result.StopReason = StopReasonContextBudget
 			result.Outcome = OutcomeSuspended
 			return result, nil
 		}
 
-		// 终止条件：默认含 StepCountIs(MaxSteps)。达到步数仍在调工具则强制收尾，
-		// 用最后一次的文本作答，不报错 —— 业务侧看 StopReason 判断是否需要调优。
+		// Stop conditions include StepCountIs(MaxSteps) by default. If the model
+		// is still calling tools at the step limit, end the run with the last
+		// text as the answer instead of erroring; the application inspects
+		// StopReason to decide whether tuning is needed.
 		if a.stop(result.Steps) {
 			if len(result.Steps) >= a.cfg.MaxSteps {
 				result.StopReason = StopReasonMaxSteps
@@ -659,7 +671,7 @@ func (a *Agent) resumeDurableTools(ctx context.Context, request RunRequest, snap
 		return snapshot, checkpoint, nil
 	}
 	if sig, count, detected := a.detector.Detect(checkpoint.CompletedSteps); detected {
-		return snapshot, checkpoint, fmt.Errorf("%w: 签名 %s 重复 %d 次", ErrLoopDetected, sig, count)
+		return snapshot, checkpoint, fmt.Errorf("%w: signature %s repeated %d times", ErrLoopDetected, sig, count)
 	}
 	if ContextBudgetExceeded(a.cfg.ContextWindow, step.Usage.InputTokens()) {
 		checkpoint.Outcome = *resultFromCheckpoint(checkpoint, a.cfg.ModelName)
@@ -738,7 +750,8 @@ func (a *Agent) nextRequest(history []Message, steps []StepResult, run RunReques
 	return stepRequest{request: request, toolSet: toolSet, choice: validatedChoice}, nil
 }
 
-// streamStep 流式跑一步，把文本增量转成事件，返回聚合后的响应。
+// streamStep runs one streamed step, turning text deltas into observations and
+// returning the aggregated response.
 func (a *Agent) streamStep(ctx context.Context, next stepRequest, observer *observer) (*Response, error) {
 	stepCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -811,7 +824,7 @@ func (a *Agent) streamStep(ctx context.Context, next stepRequest, observer *obse
 	return resp, nil
 }
 
-// assembleMessage 用文本与工具调用组装 assistant 消息。
+// assembleMessage builds an assistant message from text and tool calls.
 func assembleMessage(text string, calls []ToolCall) Message {
 	msg := Message{Role: RoleAssistant}
 	if text != "" {
@@ -862,18 +875,18 @@ func (a *Agent) execOne(ctx context.Context, toolSet *ToolSet, call ToolCall, ex
 
 	tool, err := toolSet.Get(call.Name)
 	if err != nil {
-		return errResult(fmt.Sprintf("工具 %s 不可用：%s。请改用其他可用工具。", call.Name, err.Error())), false, nil
+		return errResult(fmt.Sprintf("Tool %s is unavailable: %s. Use another available tool instead.", call.Name, err.Error())), false, nil
 	}
 
 	if err := toolSet.validate(call.Name, call.Input); err != nil {
-		return errResult(fmt.Sprintf("%s。请重新输出符合 JSON Schema 的合法 JSON 对象。", err.Error())), true, nil
+		return errResult(fmt.Sprintf("%s. Reply with a valid JSON object that conforms to the tool's JSON Schema.", err.Error())), true, nil
 	}
 
 	res, err := tool.Execute(ctx, ToolInvocation{CallID: call.ID, Name: call.Name, RawInput: call.Input, ExecutionKey: executionKey})
 	if err != nil {
 		return ToolResult{}, false, fmt.Errorf("execute tool %q: %w", call.Name, err)
 	}
-	// 补齐配对信息，工具实现可以不关心。
+	// Fill in pairing metadata so tool implementations do not have to.
 	res.ToolCallID = call.ID
 	if res.Name == "" {
 		res.Name = call.Name

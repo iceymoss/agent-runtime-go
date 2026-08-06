@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// fakeTool 是测试用工具：按 name 返回固定结果，可选返回错误。
+// fakeTool is a test tool: it returns a fixed result keyed by name, and optionally an error.
 type fakeTool struct {
 	name           string
 	desc           string
@@ -49,9 +49,9 @@ func TestRegistryRegister(t *testing.T) {
 		tool    Tool
 		wantErr error
 	}{
-		{name: "正常注册", tool: &fakeTool{name: "score_round"}},
-		{name: "工具名为空", tool: &fakeTool{name: ""}, wantErr: ErrAgentConfigInvalid},
-		{name: "工具为 nil", tool: nil, wantErr: ErrAgentConfigInvalid},
+		{name: "normal registration", tool: &fakeTool{name: "score_round"}},
+		{name: "empty tool name", tool: &fakeTool{name: ""}, wantErr: ErrAgentConfigInvalid},
+		{name: "nil tool", tool: nil, wantErr: ErrAgentConfigInvalid},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -59,15 +59,15 @@ func TestRegistryRegister(t *testing.T) {
 			err := r.Register(tt.tool)
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
-					t.Fatalf("Register() error = %v, 期望 %v", err, tt.wantErr)
+					t.Fatalf("Register() error = %v, want %v", err, tt.wantErr)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("Register() 意外报错: %v", err)
+				t.Fatalf("Register() unexpected error: %v", err)
 			}
 			if _, ok := r.Get("score_round"); !ok {
-				t.Fatal("注册后 Get() 取不到工具")
+				t.Fatal("Get() cannot find the tool after registration")
 			}
 		})
 	}
@@ -260,17 +260,17 @@ func TestRegistryNamesSorted(t *testing.T) {
 	r := NewRegistry()
 	for _, name := range []string{"gen_options", "score_round", "aaa"} {
 		if err := r.Register(&fakeTool{name: name}); err != nil {
-			t.Fatalf("Register(%s) 报错: %v", name, err)
+			t.Fatalf("Register(%s) failed: %v", name, err)
 		}
 	}
 	got := r.Names()
 	want := []string{"aaa", "gen_options", "score_round"}
 	if len(got) != len(want) {
-		t.Fatalf("Names() = %v, 期望 %v", got, want)
+		t.Fatalf("Names() = %v, want %v", got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Fatalf("Names() = %v, 期望 %v", got, want)
+			t.Fatalf("Names() = %v, want %v", got, want)
 		}
 	}
 }
@@ -281,7 +281,7 @@ func TestNewToolSetWhitelist(t *testing.T) {
 		r := NewRegistry()
 		for _, name := range []string{"score_round", "gen_options", "danger"} {
 			if err := r.Register(&fakeTool{name: name}); err != nil {
-				t.Fatalf("Register(%s) 报错: %v", name, err)
+				t.Fatalf("Register(%s) failed: %v", name, err)
 			}
 		}
 		return r
@@ -296,35 +296,35 @@ func TestNewToolSetWhitelist(t *testing.T) {
 		wantDefs    int
 	}{
 		{
-			name:        "白名单内的工具可用",
+			name:        "tools in the whitelist are available",
 			allowed:     []string{"score_round", "gen_options"},
 			allowedName: "score_round",
 			wantAllowed: true,
 			wantDefs:    2,
 		},
 		{
-			name:        "白名单外的工具不可用",
+			name:        "tools outside the whitelist are unavailable",
 			allowed:     []string{"score_round"},
 			allowedName: "danger",
 			wantAllowed: false,
 			wantDefs:    1,
 		},
 		{
-			name:        "nil 白名单不限制",
+			name:        "nil whitelist does not restrict",
 			allowed:     nil,
 			allowedName: "danger",
 			wantAllowed: true,
 			wantDefs:    3,
 		},
 		{
-			name:        "空白名单禁用全部工具",
+			name:        "empty whitelist disables all tools",
 			allowed:     []string{},
 			allowedName: "score_round",
 			wantAllowed: false,
 			wantDefs:    0,
 		},
 		{
-			name:    "白名单引用未注册的工具即装配失败",
+			name:    "whitelist referencing an unregistered tool fails assembly",
 			allowed: []string{"not_registered"},
 			wantErr: ErrToolNotFound,
 		},
@@ -335,18 +335,18 @@ func TestNewToolSetWhitelist(t *testing.T) {
 			set, err := NewToolSet(newRegistry(t), tt.allowed)
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
-					t.Fatalf("NewToolSet() error = %v, 期望 %v", err, tt.wantErr)
+					t.Fatalf("NewToolSet() error = %v, want %v", err, tt.wantErr)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("NewToolSet() 意外报错: %v", err)
+				t.Fatalf("NewToolSet() unexpected error: %v", err)
 			}
 			if got := set.Allowed(tt.allowedName); got != tt.wantAllowed {
-				t.Errorf("Allowed(%s) = %v, 期望 %v", tt.allowedName, got, tt.wantAllowed)
+				t.Errorf("Allowed(%s) = %v, want %v", tt.allowedName, got, tt.wantAllowed)
 			}
 			if got := len(set.Definitions()); got != tt.wantDefs {
-				t.Errorf("len(Definitions()) = %d, 期望 %d", got, tt.wantDefs)
+				t.Errorf("len(Definitions()) = %d, want %d", got, tt.wantDefs)
 			}
 		})
 	}
@@ -355,21 +355,21 @@ func TestNewToolSetWhitelist(t *testing.T) {
 func TestToolSetGetNotAllowed(t *testing.T) {
 	r := NewRegistry()
 	if err := r.Register(&fakeTool{name: "danger"}); err != nil {
-		t.Fatalf("Register 报错: %v", err)
+		t.Fatalf("Register failed: %v", err)
 	}
 	if err := r.Register(&fakeTool{name: "score_round"}); err != nil {
-		t.Fatalf("Register 报错: %v", err)
+		t.Fatalf("Register failed: %v", err)
 	}
 	set, err := NewToolSet(r, []string{"score_round"})
 	if err != nil {
-		t.Fatalf("NewToolSet 报错: %v", err)
+		t.Fatalf("NewToolSet failed: %v", err)
 	}
 
 	if _, err := set.Get("danger"); !errors.Is(err, ErrToolNotAllowed) {
-		t.Fatalf("Get(danger) error = %v, 期望 ErrToolNotAllowed", err)
+		t.Fatalf("Get(danger) error = %v, want ErrToolNotAllowed", err)
 	}
 	if _, err := set.Get("score_round"); err != nil {
-		t.Fatalf("Get(score_round) 意外报错: %v", err)
+		t.Fatalf("Get(score_round) unexpected error: %v", err)
 	}
 }
 
@@ -377,18 +377,18 @@ func TestMessageAccessors(t *testing.T) {
 	msg := Message{
 		Role: RoleAssistant,
 		Parts: []ContentPart{
-			{Type: PartText, Text: "先"},
+			{Type: PartText, Text: "before"},
 			{Type: PartToolCall, ToolCall: &ToolCall{ID: "c1", Name: "score_round", Input: `{"a":1}`}},
-			{Type: PartText, Text: "后"},
+			{Type: PartText, Text: "after"},
 			{Type: PartToolCall, ToolCall: &ToolCall{ID: "c2", Name: "gen_options"}},
 		},
 	}
-	if got := msg.Text(); got != "先后" {
-		t.Errorf("Text() = %q, 期望 %q", got, "先后")
+	if got := msg.Text(); got != "beforeafter" {
+		t.Errorf("Text() = %q, want %q", got, "beforeafter")
 	}
 	calls := msg.ToolCalls()
 	if len(calls) != 2 || calls[0].ID != "c1" || calls[1].Name != "gen_options" {
-		t.Errorf("ToolCalls() = %+v, 期望两个调用 c1/gen_options", calls)
+		t.Errorf("ToolCalls() = %+v, want two calls c1/gen_options", calls)
 	}
 
 	toolMsg := NewToolMessage(
@@ -396,11 +396,11 @@ func TestMessageAccessors(t *testing.T) {
 		ToolResult{ToolCallID: "c2", Name: "gen_options", IsError: true},
 	)
 	if toolMsg.Role != RoleTool {
-		t.Errorf("NewToolMessage().Role = %q, 期望 %q", toolMsg.Role, RoleTool)
+		t.Errorf("NewToolMessage().Role = %q, want %q", toolMsg.Role, RoleTool)
 	}
 	results := toolMsg.ToolResults()
 	if len(results) != 2 || results[0].ToolCallID != "c1" || !results[1].IsError {
-		t.Errorf("ToolResults() = %+v, 期望保留两条结果与 IsError", results)
+		t.Errorf("ToolResults() = %+v, want both results and IsError preserved", results)
 	}
 }
 
@@ -409,6 +409,6 @@ func TestUsageAdd(t *testing.T) {
 	u.Add(Usage{PromptTokens: 3, CompletionTokens: 7, TotalTokens: 10})
 	want := Usage{PromptTokens: 13, CompletionTokens: 12, TotalTokens: 25}
 	if u != want {
-		t.Errorf("Add() = %+v, 期望 %+v", u, want)
+		t.Errorf("Add() = %+v, want %+v", u, want)
 	}
 }

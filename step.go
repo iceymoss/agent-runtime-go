@@ -1,18 +1,19 @@
 package agent
 
-// StepResult 是一步（一次模型调用 + 其工具执行）的结果。
+// StepResult is the result of one step (one model call plus its tool executions).
 type StepResult struct {
-	// StepNumber 从 0 开始的步序号。
+	// StepNumber is the zero-based step index.
 	StepNumber int `json:"step_number"`
-	// Message 本步模型产出的 assistant 消息。
+	// Message is the assistant message produced in this step.
 	Message Message `json:"message"`
-	// ToolCalls 本步发起的工具调用。
+	// ToolCalls are the tool calls made in this step.
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
-	// ToolResults 本步工具的执行结果，与 ToolCalls 按 ToolCallID 配对。
+	// ToolResults are this step's tool execution results, paired with
+	// ToolCalls by ToolCallID.
 	ToolResults []ToolResult `json:"tool_results,omitempty"`
-	// Usage 本步用量。
+	// Usage is the usage for this step.
 	Usage Usage `json:"usage"`
-	// FinishReason 本步停止原因。
+	// FinishReason is the reason this step stopped.
 	FinishReason FinishReason `json:"finish_reason,omitempty"`
 }
 
@@ -41,15 +42,16 @@ type StepPolicyDecision struct {
 // copies and cannot replace the Agent's Model or mutate conversation history.
 type StepPolicy func(StepPolicyInput) (StepPolicyDecision, error)
 
-// StopCondition 判定是否该结束循环。组合式设计，可叠加：任一命中即停。
+// StopCondition decides whether the loop should end. Conditions are
+// composable and stack: any match stops the run.
 type StopCondition = func(steps []StepResult) bool
 
-// StepCountIs 在步数达到 n 时停止。
+// StepCountIs stops when the step count reaches n.
 func StepCountIs(n int) StopCondition {
 	return func(steps []StepResult) bool { return len(steps) >= n }
 }
 
-// HasToolCall 在某步调用过指定工具时停止。
+// HasToolCall stops once any step has called the named tool.
 func HasToolCall(name string) StopCondition {
 	return func(steps []StepResult) bool {
 		for _, s := range steps {
@@ -63,7 +65,7 @@ func HasToolCall(name string) StopCondition {
 	}
 }
 
-// MaxTokensUsed 在累计 token 用量达到 max 时停止。
+// MaxTokensUsed stops when accumulated token usage reaches max.
 func MaxTokensUsed(max int) StopCondition {
 	return func(steps []StepResult) bool {
 		var total int
@@ -74,7 +76,7 @@ func MaxTokensUsed(max int) StopCondition {
 	}
 }
 
-// AnyStopCondition 把多个条件并成一个：任一命中即停。
+// AnyStopCondition merges several conditions into one: any match stops the run.
 func AnyStopCondition(conds ...StopCondition) StopCondition {
 	return func(steps []StepResult) bool {
 		for _, c := range conds {
@@ -86,10 +88,12 @@ func AnyStopCondition(conds ...StopCondition) StopCondition {
 	}
 }
 
-// ContextBudgetExceeded 判定最新请求的 prompt 上下文占用是否接近窗口上限。
-// promptTokens 必须是最新一次请求的输入 token 数，而非跨请求累计的计费用量。
-// 大窗口模型留固定 buffer，小窗口按比例留 —— 固定 buffer 在小窗口模型上会把可用空间吃光。
-// 当前只做判定与中断，不在 Runtime 内自动压缩上下文。
+// ContextBudgetExceeded reports whether the latest request's prompt occupancy
+// is close to the window limit. promptTokens must be the input token count of
+// the latest request, not billed usage accumulated across requests.
+// Large-window models reserve a fixed buffer while small windows reserve
+// proportionally: a fixed buffer would consume most of a small window.
+// The runtime only detects and interrupts; it never compacts context itself.
 func ContextBudgetExceeded(contextWindow, promptTokens int) bool {
 	if contextWindow <= 0 {
 		return false
@@ -97,16 +101,16 @@ func ContextBudgetExceeded(contextWindow, promptTokens int) bool {
 	return promptTokens > contextWindow-contextReserve(contextWindow)
 }
 
-// contextReserveRatio 小窗口模型的保留比例。
+// contextReserveRatio is the reserve ratio for small-window models.
 const contextReserveRatio = 0.2
 
-// largeContextThreshold 超过此值视为大窗口模型，改用固定 buffer。
+// largeContextThreshold marks a model as large-window, switching to a fixed buffer.
 const largeContextThreshold = 100_000
 
-// largeContextReserve 大窗口模型的固定保留 token 数。
+// largeContextReserve is the fixed reserve for large-window models.
 const largeContextReserve = 20_000
 
-// contextReserve 返回需要预留的 token 数。
+// contextReserve returns the number of tokens to reserve.
 func contextReserve(contextWindow int) int {
 	if contextWindow > largeContextThreshold {
 		return largeContextReserve
