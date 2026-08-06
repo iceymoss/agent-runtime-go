@@ -180,7 +180,7 @@ func TestNonStreamingMode(t *testing.T) {
 	runner, err := agent.New(agent.Config{
 		Key:       "test.hello",
 		ModelName: "fake-1",
-		MaxSteps:  2,
+		MaxSteps:  4,
 	}, model, agent.NewRegistry())
 	if err != nil {
 		t.Fatalf("new agent: %v", err)
@@ -251,7 +251,7 @@ func TestStreamErrorChunkFailsRun(t *testing.T) {
 	runner, err := agent.New(agent.Config{
 		Key:       "test.error",
 		ModelName: "fake-1",
-		MaxSteps:  2,
+		MaxSteps:  4,
 	}, model, agent.NewRegistry())
 	if err != nil {
 		t.Fatalf("new agent: %v", err)
