@@ -1,0 +1,6 @@
+# Keep LF endings everywhere so gofmt and the CI formatting check stay stable
+# regardless of each contributor's core.autocrlf setting.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.gif binary
