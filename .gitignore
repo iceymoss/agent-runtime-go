@@ -1,0 +1,4 @@
+/.idea/
+/docs-site/node_modules/
+/docs-site/*.tsbuildinfo
+/cmd/docs/dist/
