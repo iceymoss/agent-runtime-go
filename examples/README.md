@@ -1,6 +1,6 @@
 # Examples
 
-示例按复杂度递进，并且都不需要 API Key。
+示例按复杂度递进。`hello` 和 `tool-agent` 不需要 API Key；`openai-compat` 连接真实模型。
 
 ## Hello
 
@@ -27,6 +27,23 @@ go run ./examples/tool-agent
 - Tool registry 和白名单
 - 完整的 model -> tool -> model 循环
 - 用 facade 封装特定用途 Agent
+
+## OpenAI-Compat
+
+```bash
+OPENAI_API_KEY=sk-... go run ./examples/openai-compat
+
+# 任何 OpenAI 兼容端点都可以：
+OPENAI_BASE_URL=https://api.deepseek.com/v1 OPENAI_API_KEY=... OPENAI_MODEL=deepseek-chat go run ./examples/openai-compat
+OPENAI_BASE_URL=http://localhost:11434/v1 OPENAI_MODEL=qwen2.5 go run ./examples/openai-compat
+```
+
+展示：
+
+- 官方适配器 `providers/openaicompat` 连接真实模型（SSE 流式）
+- `agent.NewTool` 从结构体生成工具 schema
+- 通过 `ObservationEmitter` 实时打印文本增量和工具调用
+- 读取 `StopReason`、步数和 token 用量
 
 ## iCoder
 
