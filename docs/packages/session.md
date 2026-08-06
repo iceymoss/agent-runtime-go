@@ -96,6 +96,12 @@ func main() {
 }
 ```
 
+运行输出：
+
+```text
+revision: 0 -> 1
+```
+
 关键行为：
 
 - `Create` 要求 `UserKey`、`AgentKey`、`Identity` 非空，否则返回 `ErrInvalidCommand`。新会话从 `Revision == 0`、`StatusActive` 开始。

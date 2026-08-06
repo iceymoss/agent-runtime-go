@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -101,5 +102,41 @@ func TestWorkspaceChangeDirectoryAffectsRelativeTools(t *testing.T) {
 	changed, err = workspace.ChangeDirectory("/")
 	if err != nil || changed != root {
 		t.Fatalf("ChangeDirectory(/) = %q, %v", changed, err)
+	}
+}
+
+func TestWorkspaceCodeAgentOperations(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "pkg", "api"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "pkg", "api", "handler.go")
+	original := "package api\n\nfunc Handle() string {\n\treturn \"old\"\n}\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := workspace.Glob(context.Background(), "**/*.go", 10)
+	if err != nil || len(files) != 1 || files[0] != "pkg/api/handler.go" {
+		t.Fatalf("Glob() = %#v, %v", files, err)
+	}
+	matches, err := workspace.SearchPattern(context.Background(), `func\s+Handle`, "**/*.go", true, 10)
+	if err != nil || len(matches) != 1 || matches[0].Line != 3 {
+		t.Fatalf("SearchPattern() = %#v, %v", matches, err)
+	}
+	content, err := workspace.ReadFileLines(context.Background(), "pkg/api/handler.go", 3, 2)
+	if err != nil || content.StartLine != 3 || content.EndLine != 4 || !content.Truncated || !strings.Contains(content.Content, "3: func Handle") {
+		t.Fatalf("ReadFileLines() = %#v, %v", content, err)
+	}
+	updatedDigest, err := workspace.EditFile(context.Background(), "pkg/api/handler.go", `return "old"`, `return "new"`, content.Digest, false)
+	if err != nil || updatedDigest == content.Digest {
+		t.Fatalf("EditFile() = %q, %v", updatedDigest, err)
+	}
+	if _, err := workspace.EditFile(context.Background(), "pkg/api/handler.go", `return "new"`, `return "stale"`, content.Digest, false); err == nil {
+		t.Fatal("EditFile() accepted stale digest")
 	}
 }

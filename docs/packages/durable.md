@@ -98,6 +98,13 @@ func main() {
 }
 ```
 
+运行输出：
+
+```text
+created: true status: claimed
+terminal: true revision: 4
+```
+
 关键行为：
 
 - `Begin` 按 `RunKey` 幂等：同一 key 用完全相同的不可变输入重放返回 `created == false`；输入不同返回 `ErrRunConflict`。`Identity` 四个字段和两个 digest 都是必填。真实场景下 digest 用 `durable.DigestInput` / `durable.DigestConfig` 从不可变输入计算，不要手写。

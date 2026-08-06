@@ -1,6 +1,6 @@
 # 速查表
 
-本文供处理 `RunResult`、分类错误和运行验证命令时快速查阅，以当前源码契约为准。项目仍处于 `v0.x`，生产使用应固定具体版本。概念介绍见 [concepts.md](concepts.md)，包选择见 [README.md](README.md) 与 `packages/` 目录。
+本文供处理 `RunResult`、分类错误和运行验证命令时快速查阅，以当前源码契约为准。项目仍处于 `v0.x`，生产使用应固定具体版本。概念介绍见 [concepts.md](concepts.md)，包选择见[文档首页](/)与 `packages/` 目录。
 
 ## 安装
 
@@ -124,6 +124,21 @@ go vet ./...
 go build ./...
 ```
 
+运行输出：
+
+```text
+$ go test ./... -count=1
+ok  	github.com/iceymoss/agent-runtime-go	1.171s
+ok  	github.com/iceymoss/agent-runtime-go/app	0.102s
+...（共 17 个包 ok；agenttest 与 3 个 examples 包无测试文件）
+$ go test -race ./... -count=1
+ok  	github.com/iceymoss/agent-runtime-go	2.243s
+...（全部通过）
+$ go vet ./...
+$ go build ./...
+（vet 与 build 无输出即通过）
+```
+
 iCoder 独立 module，在 `demo/icoder` 运行（`go test ./...` 不跨嵌套 module，仓库根测试不覆盖它）：
 
 ```bash
@@ -131,6 +146,20 @@ CGO_ENABLED=1 go test ./... -count=1
 CGO_ENABLED=1 go test -race ./... -count=1
 CGO_ENABLED=1 go vet ./...
 CGO_ENABLED=1 go build ./cmd/icoder
+```
+
+运行输出：
+
+```text
+$ CGO_ENABLED=1 go test ./... -count=1
+ok  	github.com/iceymoss/agent-runtime-go/demo/icoder/cmd/icoder	0.262s
+ok  	github.com/iceymoss/agent-runtime-go/demo/icoder/internal/icoder	0.686s
+$ CGO_ENABLED=1 go test -race ./... -count=1
+ok  	github.com/iceymoss/agent-runtime-go/demo/icoder/cmd/icoder	1.208s
+ok  	github.com/iceymoss/agent-runtime-go/demo/icoder/internal/icoder	1.647s
+$ CGO_ENABLED=1 go vet ./...
+$ CGO_ENABLED=1 go build ./cmd/icoder
+（vet 与 build 无输出即通过）
 ```
 
 窄范围排障：

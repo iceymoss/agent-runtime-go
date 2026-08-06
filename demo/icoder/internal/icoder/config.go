@@ -20,6 +20,7 @@ type Config struct {
 	AllowWrites   bool
 	ContextWindow int
 	MaxTokens     int
+	MaxSteps      int
 }
 
 func (c *Config) Normalize() error {
@@ -58,6 +59,9 @@ func (c *Config) Normalize() error {
 	}
 	if c.MaxTokens <= 0 {
 		c.MaxTokens = 4096
+	}
+	if c.MaxSteps <= 0 {
+		c.MaxSteps = 20
 	}
 	return nil
 }

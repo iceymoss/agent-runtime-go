@@ -94,6 +94,12 @@ func main() {
 }
 ```
 
+运行输出：
+
+```text
+ctx_sha256:d007bd48891e4438b9198a301 39
+```
+
 关键行为：
 
 - **组装顺序固定**：`SystemMessages` → `CapabilityMessages` → `SummaryMessages` → 受保护事实投影 → `MainlineMessages` → `BranchMessages` → `InvocationMessages`，拼好后整体走一遍 `NormalizeHistory`（`RepairReject` 策略），任何配对问题都会让 `Prepare` 失败。

@@ -22,7 +22,7 @@ func main() {
 }
 
 func run() error {
-	listen := flag.String("listen", "127.0.0.1:8080", "HTTP listen address")
+	listen := flag.String("listen", "127.0.0.1:9090", "HTTP listen address")
 	devURL := flag.String("dev-url", "", "Vite development server URL")
 	flag.Parse()
 

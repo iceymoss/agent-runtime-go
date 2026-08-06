@@ -98,6 +98,14 @@ func main() {
 }
 ```
 
+运行输出：
+
+```text
+sequence: 1
+deliver event-1 type=session.updated payload={"status":"ok"}
+claimed=1 delivered=1 retried=0 dead=0
+```
+
 关键行为：
 
 - `Envelope.Sequence` 和 `PersistedAt` 由存储分配，输入时必须为零值，否则 `Append` 返回 `ErrInvalidEnvelope`。

@@ -1,209 +1,154 @@
-# iCoder 可运行参考应用
+# iCoder
 
-`icoder` 是基于 Agent Runtime for Go 的 Code Agent demo，也是一个独立 Go module。它只通过 runtime 的公开 API 组合 OpenAI-compatible model、8 个内置工具、Permission、Skills、可选 MCP、synthetic Sub-Agent 和 SQLite 会话历史。
+`iCoder` 是基于 Agent Runtime for Go 构建的终端 Code Agent。它提供 Bubble Tea TUI、Cobra 命令行、流式模型输出、工具执行状态、SQLite 多会话历史、受控工作区编辑、Skills 和可选 MCP。
 
-完整源码导读、请求时序和扩展路线见 [iCoder 教程](../../docs/icoder.md)。
+## 功能
 
-## 先看路径
+- 默认启动全屏 TUI，支持多行输入、结构化工具卡片、流式回答和运行取消。
+- 写入或命令执行时显示审批面板，可逐次允许或拒绝，不需要全局开放权限。
+- 支持 slash command 自动补全、session picker、工具详情展开和 viewport 浏览。
+- `run` 非交互模式可用于脚本和 CI，支持 stdin 与 JSON 输出。
+- SQLite 持久化对话、usage 和 terminal events。
+- 文件 glob、正则搜索、带行号的范围读取、冲突安全的局部编辑和全量写入。
+- 受限的 Go/Git 命令执行；写入和命令默认需要授权。
+- Skills、OpenAI-compatible provider 和 Streamable HTTP MCP。
+- Bash、Zsh、Fish 和 PowerShell completion。
 
-以下命令都从当前目录 `demo/icoder` 运行：
+## 安装
+
+要求 Go 1.25+、C 编译器和 `CGO_ENABLED=1`。SQLite 驱动依赖 CGO。
 
 ```bash
 cd demo/icoder
+go build -o icoder ./cmd/icoder
 ```
 
-```text
---workspace ../..    -> agent-runtime-go 仓库根
---workspace ../../.. -> 仓库父目录 open-source
---skills ./skills    -> demo/icoder/skills
-```
-
-仓库根是 `../..`，不是 `../../../..`。本 module 的 `go.mod` 也使用 `replace github.com/iceymoss/agent-runtime-go => ../..`。
-
-## 前置条件
-
-- Go 1.25+。
-- C 编译器和 `CGO_ENABLED=1`。`github.com/mattn/go-sqlite3` 需要 CGO；这只影响 iCoder demo，不代表 runtime Core 依赖 CGO。
-- 支持 Chat Completions tool calling 的 OpenAI-compatible endpoint。
-
-```bash
-go version
-go env CGO_ENABLED CC
-```
-
-## 配置与验证
+配置 OpenAI-compatible endpoint：
 
 ```bash
 export ICODER_API_KEY='your-key'
 export ICODER_BASE_URL='https://api.example.com/v1'
 export ICODER_MODEL='your-model'
-
-CGO_ENABLED=1 go test ./... -count=1
-CGO_ENABLED=1 go vet ./...
-CGO_ENABLED=1 go build -o /tmp/icoder ./cmd/icoder
 ```
 
-三个环境变量都必填。也可用 `--base-url` 和 `--model` 覆盖后两项；API key 没有对应 flag。
+API key 只从环境变量读取，不提供 CLI flag，避免进入 shell history。
 
-## 运行示例
+## TUI
 
-只读审计当前仓库，并把 SQLite 放在仓库外：
+从目标仓库运行，或通过 `--workspace` 指定工作区：
 
 ```bash
-go run ./cmd/icoder \
-  --workspace ../.. \
-  --db /tmp/icoder.db \
-  --skills ./skills \
-  --session sdk-review \
-  --task '阅读 tool loop，说明模型错误和工具错误如何传播'
+./icoder --workspace /path/to/repository
+# 等价：./icoder chat --workspace /path/to/repository
 ```
 
-审计 `open-source` 下多个仓库：
+| 按键 | 行为 |
+|---|---|
+| `Enter` | 提交任务 |
+| `Alt+Enter` / `Ctrl+J` | 输入换行 |
+| `Ctrl+C` | 运行中取消；空闲时退出 |
+| `Esc` | 取消当前运行 |
+| `Ctrl+P` | 打开 slash command 补全 |
+| `Ctrl+L` | 打开 session picker |
+| `Ctrl+O` | 展开或折叠工具输入输出 |
+| `PageUp` / `PageDown` | 浏览 transcript |
 
-```bash
-go run ./cmd/icoder \
-  --workspace ../../.. \
-  --db /tmp/icoder-open-source.db \
-  --skills ./skills \
-  --task '找到 agent-runtime-go 并列出它的 Go modules'
-```
-
-查询天气：
-
-```bash
-go run ./cmd/icoder \
-  --workspace ../.. \
-  --db /tmp/icoder-weather.db \
-  --task '查询北京当前天气，使用摄氏度'
-```
-
-`get_weather` 使用 Open-Meteo，不需要额外 API key，但需要访问公共网络。工具输入为 `{"location":"Beijing","units":"celsius"}`，单位只支持 `celsius` 和 `fahrenheit`。
-
-## REPL
-
-不传 `--task`，或显式传 `-i` / `--interactive`：
-
-```bash
-go run ./cmd/icoder \
-  --workspace ../../.. \
-  --db /tmp/icoder-repl.db \
-  --skills ./skills \
-  --session sdk-review \
-  -i
-```
-
-```text
-iCoder interactive mode. Type /help for commands.
-icoder[sdk-review:.../open-source]> /pwd
-/home/user/open-source
-icoder[sdk-review:.../open-source]> /cd agent-runtime-go
-/home/user/open-source/agent-runtime-go
-icoder[sdk-review:.../agent-runtime-go]> 查看当前目录的 runtime 入口
-```
+TUI slash commands：
 
 | 命令 | 行为 |
 |---|---|
-| `/help` | 显示帮助 |
-| `/pwd` | 显示工具当前目录 |
-| `/cd <path>` | 在 workspace 内切换；`/cd /` 返回 root |
-| `/session` | 显示 active session |
-| `/sessions` | 列出 SQLite sessions |
-| `/use <id>` | 切换或创建 session |
-| `/new [id]` | 新建并切换；省略 ID 时生成随机 16 位 hex ID |
-| `/history` | 显示当前 session messages |
-| `/clear` | 删除当前 session 及其 history、turns、events |
-| `/events` | 回放当前 session terminal events |
+| `/help` | 显示命令 |
+| `/pwd` | 显示工具 cwd |
+| `/cd <path>` | 在 workspace 内切换目录；`/cd /` 返回根目录 |
+| `/sessions` | 打开持久化会话选择器 |
+| `/use <id>` | 切换或创建会话 |
+| `/new [id]` | 创建并切换会话 |
+| `/clear` | 清空当前会话 |
 | `/tools` | 列出模型可见工具 |
-| `/skills` | 列出已加载 Skills |
-| `/exit` | 退出 |
+| `/details` | 展开或折叠工具详情 |
+| `/diff` | 显示当前 Git workspace diff |
+| `/status` | 显示当前 session 和 runtime 状态 |
+| `/quit` | 退出 |
 
-Slash command 由 CLI 执行，不发送给模型。自然语言“进入某目录”不会改变工具 cwd，必须用 `/cd`。cwd 不持久化；session history、usage 和 terminal events 持久化到 SQLite。未指定 `--session` 时，每次启动生成新的随机 ID。
-
-直接回放事件：
+## 非交互模式
 
 ```bash
-go run ./cmd/icoder \
-  --workspace ../.. \
-  --db /tmp/icoder.db \
-  --session sdk-review \
-  --events
+./icoder run --workspace /path/to/repository \
+  '检查当前修改，修复问题并运行最小测试'
+
+printf '%s' '解释这个项目的架构' | ./icoder run --workspace .
+
+./icoder run --json '审查当前 git diff'
 ```
 
-## 8 个内置工具
+旧版 `--task` 已迁移到 `run --task`：
+
+```bash
+./icoder run --task '列出关键包及职责'
+```
+
+## 命令
+
+```text
+icoder                         启动 TUI
+icoder chat                    显式启动 TUI
+icoder run [prompt]            执行单个任务
+icoder session list            列出会话
+icoder session history         查看当前会话历史
+icoder session clear           清空当前会话
+icoder events                  回放当前会话 terminal events
+icoder tools                   列出工具
+icoder config show             显示已解析的非敏感配置
+icoder config validate         验证配置
+icoder completion <shell>      生成 shell completion
+icoder version                 显示版本
+```
+
+使用 `icoder <command> --help` 查看完整 flags。常用全局参数包括 `--workspace`、`--session`、`--db`、`--model`、`--max-steps`、`--max-tokens`、`--skills` 和 `--mcp-url`。
+
+## 工具与权限
 
 | 工具 | 用途 | 默认权限 |
 |---|---|---|
 | `get_working_directory` | 返回工具 cwd | allow |
 | `list_files` | 递归列文件 | allow |
-| `read_file` | 读取文件，最多 64 KiB | allow |
-| `search_code` | 字面子串搜索，不是正则 | allow |
-| `write_file` | 全量替换/创建文件，可带 expected digest | ask |
-| `run_command` | 运行受限 Go/Git 命令 | ask |
-| `get_weather` | Open-Meteo 当前天气 | allow |
-| `delegate_review` | 演示 child run 生命周期 | 未经过 permission wrapper |
+| `glob_files` | 按 glob 查找文件，支持 `**` | allow |
+| `read_file` | 范围读取、行号、digest 与截断信息 | allow |
+| `search_code` | 字面或正则搜索，可按 glob 过滤 | allow |
+| `git_status` | 查看分支和 workspace 状态 | allow |
+| `git_diff` | 查看 unstaged/staged diff | allow |
+| `edit_file` | 精确局部替换，支持 digest 冲突检查 | ask |
+| `write_file` | 创建或完整替换文件 | ask |
+| `run_command` | 执行受限 Go/Git 命令 | ask |
+| `get_weather` | Open-Meteo 只读网络请求 | allow |
+| `delegate_review` | 演示 Sub-Agent 生命周期 | allow |
 
-`run_command` 只允许 `go test/vet/build/fmt` 和 `git status/diff/log/show`，输入是 program/args，不是 shell 文本。
+默认情况下，TUI 会在写入或执行命令前显示审批面板。选择 `y`、`1` 或 `Enter` 只允许当前精确工具调用；选择 `n`、`2` 或 `Esc` 拒绝操作。批准结果绑定 tool call、输入 digest 和当前 run，并在执行前重新验证。
 
-默认的 write/command `ask` 会返回 approval blocker，设置 `StopTurn` 并结束当前 turn，不执行副作用。CLI 没有审批和恢复命令。确认风险后可为当前整个进程开启写与命令权限：
-
-```bash
-go run ./cmd/icoder \
-  --workspace /path/to/repository \
-  --db /tmp/icoder-write.db \
-  --allow-writes \
-  --task '修正 README 中一个明确的拼写错误并运行最小测试'
-```
-
-`--allow-writes` 不是单次授权，也不是 sandbox。
-
-## Skills
+非交互 `run` 不会从 stdin 隐式询问审批，默认安全拒绝副作用。确认工作区可信后，可以为当前进程开启所有本地写入和受限命令：
 
 ```bash
-go run ./cmd/icoder \
-  --workspace ../.. \
-  --db /tmp/icoder-skills.db \
-  --skills ./skills \
-  --task '按 Go code review skill 审查 store.go'
+./icoder --workspace /path/to/repository --allow-writes
+./icoder run --workspace /path/to/repository --allow-writes '完成修改并测试'
 ```
 
-demo 自带 `code-review` 和 `go-code-review`。它们在启动时加载为 `<untrusted-skill>` system capability messages，不热更新，也不是权限边界。
+`--allow-writes` 是进程级授权，不是 sandbox。工具使用当前用户身份运行，路径限制也不能替代操作系统隔离。`run_command` 只允许 `go test/vet/build/fmt` 和 `git status/diff/log/show`；只读审查应优先使用无需审批的 `git_status` 与 `git_diff`。
 
-## MCP
+## 数据与扩展
+
+默认数据库为 `<workspace>/.icoder.db`。`--session` 可恢复指定会话；未指定时生成随机 session ID。建议在不希望修改仓库内容时显式指定 `--db /tmp/icoder.db`。
 
 ```bash
-go run ./cmd/icoder \
-  --workspace ../.. \
-  --db /tmp/icoder-mcp.db \
-  --mcp-url 'https://approved-mcp.example.com/mcp' \
-  --task '使用可用 MCP 工具完成调查'
+./icoder --skills ./skills
+./icoder --mcp-url 'https://approved-mcp.example.com/mcp'
 ```
 
-demo 只接一个 Streamable HTTP endpoint，不从配置启动本地 stdio 命令。endpoint 的精确 host 被加入 HTTP allowlist。
+MCP 工具由远端服务定义，目前不经过本地 permission wrapper，只应连接受信 endpoint。`delegate_review` 当前是 synthetic lifecycle 示例，不会执行真实模型 review。
 
-动态 MCP 工具直接调用 `mcp.Manager.CallTool`，**不经过 iCoder 的 `permission.Service`**；`--allow-writes` 也不控制 MCP。只连接受信服务，并在生产环境另外实施身份、权限、egress 和审计。
+## 验证
 
-## Sub-Agent 的真实范围
-
-`delegate_review` 使用内存 `subagent.Service` 展示 spawn、预算、worker claim、reconcile 和 wake intent，但 runner 是 synthetic：它不调用模型、不读取仓库、不输出真实 review，只根据 task 生成 `review:<digest>` result ref 和模拟 usage。进程重启不会恢复 child，parent 也不会被真实唤醒。
-
-## SQLite
-
-默认数据库是 `<workspace>/.icoder.db`，建议演示时显式传 `--db /tmp/icoder.db`。四张表分别保存：
-
-- `icoder_sessions`：revision 和累计 usage。
-- `icoder_messages`：按 ordinal 保存 canonical messages。
-- `icoder_turns`：request idempotency key 和 result snapshot。
-- `icoder_events`：每个已提交 turn 的 `agent.run.terminal` event。
-
-`CommitTurn` 在同一事务中追加 messages、用 revision CAS 更新 session/usage、写 turn 和 terminal event。模型调用及文件、命令、weather、MCP、subagent 等副作用都在事务外，因此这不是外部副作用 exactly-once，也不是完整 `session`/`durable` worker host。
-
-## 实现边界
-
-- Provider 使用官方适配器 `providers/openaicompat`，默认走 SSE 流式并逐段转换为 `StreamChunk`；SSE 不可用时可在 `app.go` 改用 `openaicompat.WithoutStreaming()`。
-- token counter 按 bytes 粗略估算 Context Plan，不是模型 tokenizer；账单 usage 取 provider 响应。
-- Workspace 使用路径解析约束访问范围，但不是 OS sandbox，工具以当前用户身份执行并继承环境。
-- Permission、Context plan store 和 Sub-Agent store 是内存实现。
-- MCP 工具未走 permission，MCP generation 未持久化。
-- 只有成功返回并提交的 turn 写入 demo SQLite。
-
-更详细的 schema、Mermaid 时序图和生产替换建议见[完整教程](../../docs/icoder.md)；API 结果和包选择见[速查表](../../docs/reference.md)。
+```bash
+CGO_ENABLED=1 go test ./... -count=1
+CGO_ENABLED=1 go vet ./...
+CGO_ENABLED=1 go build ./cmd/icoder
+```

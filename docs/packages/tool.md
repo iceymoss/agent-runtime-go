@@ -152,6 +152,12 @@ func main() {
 }
 ```
 
+运行输出：
+
+```text
+succeeded saved
+```
+
 关键行为：
 
 - `InvocationIdentity` 中 `TenantKey`、`RunKey`、`AttemptKey`、`CallID`、`ToolName` 必填，否则返回 `ErrToolInputInvalid`。

@@ -78,6 +78,12 @@ func main() {
 }
 ```
 
+运行输出：
+
+```text
+complete 2 1
+```
+
 关键行为：
 
 - `Create` 要求 `TenantKey`、`MessageKey`、`SessionKey`、`BranchKey`、`RunKey`、`AttemptKey` 全部非空且 `FenceToken != 0`，初始 `State` 必须是 `StateBuilding`（留空会被默认填为 building）。新消息 `Revision == 1`。

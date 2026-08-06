@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -32,6 +33,15 @@ type SearchMatch struct {
 type CommandResult struct {
 	ExitCode int    `json:"exit_code"`
 	Output   string `json:"output"`
+}
+
+type FileContent struct {
+	Path      string `json:"path"`
+	Content   string `json:"content"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	Truncated bool   `json:"truncated"`
+	Digest    string `json:"digest"`
 }
 
 func NewWorkspace(root string) (*Workspace, error) {
@@ -104,12 +114,100 @@ func (w *Workspace) ReadFile(ctx context.Context, name string) (string, error) {
 	return string(data), nil
 }
 
-func (w *Workspace) Search(ctx context.Context, pattern string, limit int) ([]SearchMatch, error) {
+func (w *Workspace) ReadFileLines(ctx context.Context, name string, offset, limit int) (FileContent, error) {
+	path, err := w.resolveExisting(name)
+	if err != nil {
+		return FileContent{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return FileContent{}, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return FileContent{}, err
+	}
+	if strings.IndexByte(string(data), 0) >= 0 {
+		return FileContent{}, fmt.Errorf("file appears to be binary")
+	}
+	if offset <= 0 {
+		offset = 1
+	}
+	if limit <= 0 || limit > 2000 {
+		limit = 500
+	}
+	lines := strings.Split(string(data), "\n")
+	start := min(offset-1, len(lines))
+	end := min(start+limit, len(lines))
+	selected := lines[start:end]
+	for i := range selected {
+		selected[i] = fmt.Sprintf("%d: %s", start+i+1, selected[i])
+	}
+	content := strings.Join(selected, "\n")
+	truncated := end < len(lines)
+	if len(content) > maxToolOutput {
+		content = content[:maxToolOutput]
+		truncated = true
+	}
+	relative, _ := filepath.Rel(w.WorkingDirectory(), path)
+	return FileContent{Path: filepath.ToSlash(relative), Content: content, StartLine: start + 1, EndLine: end, Truncated: truncated, Digest: digest(data)}, nil
+}
+
+func (w *Workspace) Glob(ctx context.Context, pattern string, limit int) ([]string, error) {
+	if strings.TrimSpace(pattern) == "" {
+		return nil, fmt.Errorf("pattern is required")
+	}
+	if limit <= 0 || limit > 2000 {
+		limit = 200
+	}
+	base := w.WorkingDirectory()
+	var files []string
+	err := filepath.WalkDir(base, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if path != base && (entry.Name() == ".git" || entry.Name() == "node_modules") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		relative, err := filepath.Rel(base, path)
+		if err != nil {
+			return err
+		}
+		matched, err := globMatch(pattern, filepath.ToSlash(relative))
+		if err != nil {
+			return fmt.Errorf("invalid glob: %w", err)
+		}
+		if matched {
+			files = append(files, filepath.ToSlash(relative))
+		}
+		if len(files) >= limit {
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	sort.Strings(files)
+	return files, err
+}
+
+func (w *Workspace) SearchPattern(ctx context.Context, pattern, include string, regex bool, limit int) ([]SearchMatch, error) {
 	if pattern == "" {
 		return nil, fmt.Errorf("pattern is required")
 	}
-	if limit <= 0 || limit > 200 {
-		limit = 50
+	var expression *regexp.Regexp
+	if regex {
+		var err error
+		expression, err = regexp.Compile(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("invalid regular expression: %w", err)
+		}
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
 	}
 	var matches []SearchMatch
 	base := w.WorkingDirectory()
@@ -121,22 +219,39 @@ func (w *Workspace) Search(ctx context.Context, pattern string, limit int) ([]Se
 			return err
 		}
 		if entry.IsDir() {
-			if path != base && (strings.HasPrefix(entry.Name(), ".git") || entry.Name() == "node_modules") {
+			if path != base && (entry.Name() == ".git" || entry.Name() == "node_modules") {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		fileMatches, scanErr := searchFile(path, base, pattern, limit-len(matches))
-		matches = append(matches, fileMatches...)
-		if scanErr != nil {
-			return scanErr
+		relative, err := filepath.Rel(base, path)
+		if err != nil {
+			return err
 		}
+		if include != "" {
+			matched, err := globMatch(include, filepath.ToSlash(relative))
+			if err != nil {
+				return fmt.Errorf("invalid include glob: %w", err)
+			}
+			if !matched {
+				return nil
+			}
+		}
+		fileMatches, err := searchFilePattern(path, base, pattern, expression, limit-len(matches))
+		if err != nil {
+			return err
+		}
+		matches = append(matches, fileMatches...)
 		if len(matches) >= limit {
 			return filepath.SkipAll
 		}
 		return nil
 	})
 	return matches, err
+}
+
+func (w *Workspace) Search(ctx context.Context, pattern string, limit int) ([]SearchMatch, error) {
+	return w.SearchPattern(ctx, pattern, "", false, limit)
 }
 
 func (w *Workspace) ListFiles(ctx context.Context, limit int) ([]string, error) {
@@ -198,6 +313,10 @@ func (w *Workspace) RunCommand(ctx context.Context, program string, args []strin
 }
 
 func searchFile(path, root, pattern string, limit int) (matches []SearchMatch, resultErr error) {
+	return searchFilePattern(path, root, pattern, nil, limit)
+}
+
+func searchFilePattern(path, root, pattern string, expression *regexp.Regexp, limit int) (matches []SearchMatch, resultErr error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, nil
@@ -208,7 +327,12 @@ func searchFile(path, root, pattern string, limit int) (matches []SearchMatch, r
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 4096), 1<<20)
 	for line := 1; scanner.Scan(); line++ {
-		if strings.Contains(scanner.Text(), pattern) {
+		lineText := scanner.Text()
+		matched := strings.Contains(lineText, pattern)
+		if expression != nil {
+			matched = expression.MatchString(lineText)
+		}
+		if matched {
 			relative, err := filepath.Rel(root, path)
 			if err != nil {
 				return nil, err
@@ -220,6 +344,42 @@ func searchFile(path, root, pattern string, limit int) (matches []SearchMatch, r
 		}
 	}
 	return matches, scanner.Err()
+}
+
+func (w *Workspace) EditFile(ctx context.Context, name, oldText, newText, expectedDigest string, replaceAll bool) (string, error) {
+	if oldText == "" {
+		return "", fmt.Errorf("old_text is required")
+	}
+	path, err := w.resolveExisting(name)
+	if err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if expectedDigest != "" && digest(data) != expectedDigest {
+		return "", fmt.Errorf("file changed: expected %s, got %s", expectedDigest, digest(data))
+	}
+	count := strings.Count(string(data), oldText)
+	if count == 0 {
+		return "", fmt.Errorf("old_text was not found")
+	}
+	if count > 1 && !replaceAll {
+		return "", fmt.Errorf("old_text matched %d times; provide more context or set replace_all", count)
+	}
+	limit := 1
+	if replaceAll {
+		limit = -1
+	}
+	updated := strings.Replace(string(data), oldText, newText, limit)
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		return "", err
+	}
+	return digest([]byte(updated)), nil
 }
 
 func (w *Workspace) WriteFile(ctx context.Context, name, content, expectedDigest string) (string, error) {
@@ -275,6 +435,35 @@ func (w *Workspace) resolveForWrite(name string) (string, error) {
 func within(root, path string) bool {
 	relative, err := filepath.Rel(root, path)
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func globMatch(pattern, name string) (bool, error) {
+	patternParts := strings.Split(filepath.ToSlash(pattern), "/")
+	nameParts := strings.Split(filepath.ToSlash(name), "/")
+	var match func(int, int) (bool, error)
+	match = func(patternIndex, nameIndex int) (bool, error) {
+		if patternIndex == len(patternParts) {
+			return nameIndex == len(nameParts), nil
+		}
+		if patternParts[patternIndex] == "**" {
+			for next := nameIndex; next <= len(nameParts); next++ {
+				matched, err := match(patternIndex+1, next)
+				if err != nil || matched {
+					return matched, err
+				}
+			}
+			return false, nil
+		}
+		if nameIndex == len(nameParts) {
+			return false, nil
+		}
+		matched, err := filepath.Match(patternParts[patternIndex], nameParts[nameIndex])
+		if err != nil || !matched {
+			return false, err
+		}
+		return match(patternIndex+1, nameIndex+1)
+	}
+	return match(0, 0)
 }
 
 func digest(data []byte) string {

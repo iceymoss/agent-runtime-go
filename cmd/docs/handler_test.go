@@ -10,8 +10,10 @@ import (
 
 func TestSPAHandler(t *testing.T) {
 	assets := fstest.MapFS{
-		"index.html":        {Data: []byte("index")},
-		"assets/app-123.js": {Data: []byte("script")},
+		"index.html":              {Data: []byte("index")},
+		"docs/quickstart.html":    {Data: []byte("quickstart")},
+		"en/docs/quickstart.html": {Data: []byte("english quickstart")},
+		"assets/app-123.js":       {Data: []byte("script")},
 	}
 	handler := spaHandler(assets)
 
@@ -19,7 +21,10 @@ func TestSPAHandler(t *testing.T) {
 		path, body, cache string
 		status            int
 	}{
-		{path: "/docs/architecture", body: "index", cache: "no-cache", status: http.StatusOK},
+		{path: "/", body: "index", cache: "no-cache", status: http.StatusOK},
+		{path: "/docs/quickstart", body: "quickstart", cache: "no-cache", status: http.StatusOK},
+		{path: "/en/docs/quickstart", body: "english quickstart", cache: "no-cache", status: http.StatusOK},
+		{path: "/docs/missing", body: "404 page not found\n", status: http.StatusNotFound},
 		{path: "/assets/app-123.js", body: "script", cache: "public, max-age=31536000, immutable", status: http.StatusOK},
 		{path: "/assets/missing.js", body: "404 page not found\n", status: http.StatusNotFound},
 	}

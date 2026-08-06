@@ -25,7 +25,7 @@ func (p *Prompt) Render(data any) (string, error)
 
 直接用 `text/template` 你需要自己处理三件事：
 
-- **缺字段静默通过**：默认配置下 `{{.Name}}` 在数据里缺 `Name` 时输出 `<no value>`，坏提示词就这样混进模型请求。本包强制 `missingkey=error`，缺字段渲染直接失败。
+- **缺字段静默通过**：默认配置下 <code v-pre>{{.Name}}</code> 在数据里缺 `Name` 时输出 `<no value>`，坏提示词就这样混进模型请求。本包强制 `missingkey=error`，缺字段渲染直接失败。
 - **延迟失败**：模板语法错误如果等到运行时第一次渲染才暴露，通常已经在处理用户请求了。`New` 把失败提前到组装期。
 - **版本追溯**：提示词一改，Agent 行为就变。没有确定性版本号，你无法回答"上周三那次异常运行用的提示词和现在一样吗"。`Version()` 给出与内容一一对应的答案。
 
@@ -61,6 +61,13 @@ func main() {
 }
 ```
 
+运行输出：
+
+```text
+你好，Ava。今天的任务是：整理订单数据
+sha256:fa9130ce104b484dd2de25a4a32fe68584551e4d555314962172c342ac27a13f
+```
+
 关键行为：
 
 - `New` 的第一个参数是模板名，只用于错误信息定位和 `Name()`，不参与版本计算。
@@ -76,8 +83,8 @@ A: 不会。`missingkey=error` 只约束"模板引用了但数据里没有"的�
 **Q: 为什么两个名字不同的模板 `Version()` 相同？**
 A: 版本只由模板格式标识和源文本决定（`sha256(go-text-template-v1 + "\x00" + source)`），名字不参与。这是有意设计：版本回答的是"渲染行为是否相同"，同源文本的模板渲染行为完全一致。
 
-**Q: `{{if}}` 这类语法错误什么时候暴露？**
-A: 在 `New` 里。`prompt.New("broken", "{{if}}")` 返回的错误满足 `errors.Is(err, prompt.ErrInvalid)`，进程根本拿不到可用的 `Prompt`。建议把所有模板的构造放在启动路径上，让坏模板阻止服务上线。
+**Q: <code v-pre>{{if}}</code> 这类语法错误什么时候暴露？**
+A: 在 `New` 里。<code v-pre>prompt.New("broken", "{{if}}")</code> 返回的错误满足 `errors.Is(err, prompt.ErrInvalid)`，进程根本拿不到可用的 `Prompt`。建议把所有模板的构造放在启动路径上，让坏模板阻止服务上线。
 
 **Q: 渲染时数据缺字段，错误长什么样？**
 A: 同样满足 `errors.Is(err, prompt.ErrInvalid)`，并包含模板名和 `text/template` 的底层错误（`map has no entry for key ...`）。注意：对 map 数据缺 key 会报错；对结构体数据引用不存在的字段，在 `New` 阶段解析虽然通过，`Render` 执行时会报字段不存在的错误。

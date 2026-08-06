@@ -81,6 +81,12 @@ func main() {
 }
 ```
 
+运行输出：
+
+```text
+generation-1 true 128000
+```
+
 关键行为：
 
 - `NewCatalogSnapshot` 会深拷贝入参。构造完成后再修改传入的 `[]ProviderDescriptor`（包括 `Pricing` 指针、`DefaultOptions` 里的指针字段）不影响快照内容；反过来读出来的值改了也不会写回快照。

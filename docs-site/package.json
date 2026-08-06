@@ -4,24 +4,17 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
-    "build": "tsc -b && vite build",
-    "typecheck": "tsc -b --pretty false"
-  },
-  "dependencies": {
-    "mermaid": "^11.10.0",
-    "react": "^19.1.1",
-    "react-dom": "^19.1.1",
-    "react-markdown": "^10.1.0",
-    "rehype-slug": "^6.0.0",
-    "remark-gfm": "^4.0.1"
+    "dev": "vitepress dev . --host 127.0.0.1",
+    "build": "vitepress build .",
+    "preview": "vitepress preview . --host 127.0.0.1",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^22.13.4",
-    "@types/react": "^19.1.9",
-    "@types/react-dom": "^19.1.7",
-    "@vitejs/plugin-react": "^4.7.0",
+    "mermaid": "^11.10.0",
     "typescript": "^5.9.2",
-    "vite": "^6.1.0"
+    "vitepress": "^1.6.4",
+    "vitepress-plugin-mermaid": "^2.0.17",
+    "vue": "^3.5.0"
   }
 }

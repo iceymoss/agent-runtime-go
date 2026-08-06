@@ -25,7 +25,7 @@ func New(baseURL, apiKey string, opts ...Option) *Model
 
 自己实现 `agent.Model` 意味着要处理 SSE 解析、分片重组、终止一致性（流里发出的所有增量必须与最终 Response 完全一致，运行时会校验）、usage 字段的各家方言，以及把 HTTP 错误翻译成运行时能理解的重试语义。这些代码每个接入方都会重复写、重复踩坑。
 
-**什么时候不需要它**：上游不是 OpenAI 协议时（如 Anthropic Messages API），需要自己实现 `agent.Model` 接口，见 [agent（根包）](agent.md)。
+**什么时候不需要它**：上游不是 OpenAI 协议时（如 Anthropic Messages API），需要自己实现 `agent.Model` 接口，见 [agent](agent.md)。
 
 ## 怎么用
 
@@ -70,6 +70,15 @@ openaicompat.New("https://openrouter.ai/api/v1", key,
 
 ```bash
 OPENAI_API_KEY=sk-... go run ./examples/openai-compat
+```
+
+输出示意（实际内容因模型而异）：
+
+```text
+[tool call] get_time {"timezone":"Asia/Shanghai"}
+The current date and time in Shanghai is Thu, 06 Aug 2026 12:45:10 CST.
+
+[gpt-4o-mini] stop=complete steps=2 tokens=421
 ```
 
 ## 常见问题

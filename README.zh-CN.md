@@ -1,4 +1,8 @@
-# Agent Runtime for Go
+<p align="center">
+  <img src="docs-site/public/logo.svg" width="112" height="112" alt="Agent Runtime for Go logo">
+</p>
+
+<h1 align="center">Agent Runtime for Go</h1>
 
 [English](README.md) | 简体中文
 
@@ -250,7 +254,7 @@ agent-runtime-go
 | readiness 与有界 shutdown | `app` |
 | adapter conformance tests | `agenttest`，仅测试使用 |
 
-每个子包都有独立文档，覆盖"是什么、为什么、怎么用、常见问题"，见[文档索引](docs/README.md)。
+每个子包都有独立文档，覆盖"是什么、为什么、怎么用、常见问题"，见[文档介绍](docs/README.md)。
 
 ## 运行原理
 
@@ -293,7 +297,7 @@ validate response <- aggregate one model step
 
 ## 文档
 
-从[文档索引](docs/README.md)开始。
+文档提供中英双语。中文：[docs](docs/README.md)。英文：[docs/en](docs/en/README.md)。站点导航栏可切换语言。
 
 - 入门：[快速开始](docs/quickstart.md) · [核心概念](docs/concepts.md)
 - 子包指南（每个包一篇独立文档，覆盖"是什么、为什么、怎么用、常见问题"）：从 [agent 根包](docs/packages/agent.md) 和 [providers/openaicompat](docs/packages/openaicompat.md) 开始

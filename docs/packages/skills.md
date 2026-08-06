@@ -116,6 +116,13 @@ func main() {
 }
 ```
 
+运行输出：
+
+```text
+trusted=false class=untrusted_instructions
+这里是指令正文（Markdown）。
+```
+
 关键行为：
 
 - `NewCatalog` 不加载任何数据；`StartScope` 才触发首次加载，且只加载该租户。构造时校验来源：至少一个、`Kind` 与 `Name` 均不可重复。

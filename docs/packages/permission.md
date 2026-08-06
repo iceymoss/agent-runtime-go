@@ -110,6 +110,13 @@ func main() {
 }
 ```
 
+运行输出：
+
+```text
+ask
+allow
+```
+
 关键行为：
 
 - `Check` 会严格校验 `CheckRequest` 的必填字段（`RequestKey`、`Subject.TenantKey`、`Subject.PrincipalKey`、`RunRef`、`AttemptRef`、`ExecutionRef`、`InputDigest`、`PolicyVersion`、`ToolName`、`Action`），缺一个就返回 `ErrInvalidRequest`。

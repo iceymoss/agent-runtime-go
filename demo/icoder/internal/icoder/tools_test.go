@@ -20,7 +20,7 @@ func (t *fixedTool) Execute(context.Context, agent.ToolInvocation) (agent.ToolRe
 	return agent.ToolResult{Content: "written"}, nil
 }
 
-func TestAuthorizedToolAsksBeforeWrite(t *testing.T) {
+func TestAuthorizedToolDeniesWhenApprovalUnavailable(t *testing.T) {
 	service, err := NewPermissionService(false)
 	if err != nil {
 		t.Fatal(err)
@@ -33,8 +33,43 @@ func TestAuthorizedToolAsksBeforeWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.IsError || !result.StopTurn || !strings.Contains(result.Content, "approval required") || inner.calls != 0 {
+	if !result.IsError || !result.StopTurn || !strings.Contains(result.Content, "approval is unavailable") || inner.calls != 0 {
 		t.Fatalf("result = %#v, calls = %d", result, inner.calls)
+	}
+}
+
+func TestAuthorizedToolExecutesAfterApproval(t *testing.T) {
+	service, err := NewPermissionService(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := &fixedTool{}
+	tool := &authorizedTool{tool: inner, permission: service, action: "workspace.write", sessionID: func() string { return "session" }, resource: func(string) permission.Resource { return permission.Resource{Kind: "file", Key: "file.go"} }}
+	var prompt ApprovalPrompt
+	ctx := withRunContext(context.Background(), "run-1", func(_ context.Context, value ApprovalPrompt) (ApprovalDecision, error) {
+		prompt = value
+		return ApprovalApproveOnce, nil
+	})
+	result, err := tool.Execute(ctx, agent.ToolInvocation{CallID: "call-1", Name: "write_file", RawInput: `{"path":"file.go"}`})
+	if err != nil || result.Content != "written" || inner.calls != 1 {
+		t.Fatalf("result = %#v, calls = %d, error = %v", result, inner.calls, err)
+	}
+	if prompt.ToolName != "write_file" || prompt.Resource != "file.go" || !strings.Contains(prompt.Input, "file.go") {
+		t.Fatalf("prompt = %#v", prompt)
+	}
+}
+
+func TestAuthorizedToolDoesNotExecuteAfterRejection(t *testing.T) {
+	service, err := NewPermissionService(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := &fixedTool{}
+	tool := &authorizedTool{tool: inner, permission: service, action: "workspace.write", sessionID: func() string { return "session" }, resource: func(string) permission.Resource { return permission.Resource{Kind: "file", Key: "file.go"} }}
+	ctx := withRunContext(context.Background(), "run-2", func(context.Context, ApprovalPrompt) (ApprovalDecision, error) { return ApprovalDeny, nil })
+	result, err := tool.Execute(ctx, agent.ToolInvocation{CallID: "call-1", Name: "write_file", RawInput: `{}`})
+	if err != nil || !result.IsError || !result.StopTurn || inner.calls != 0 {
+		t.Fatalf("result = %#v, calls = %d, error = %v", result, inner.calls, err)
 	}
 }
 

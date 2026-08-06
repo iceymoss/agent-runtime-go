@@ -75,6 +75,13 @@ func main() {
 }
 ```
 
+运行输出：
+
+```text
+2026/08/06 14:27:02 ready: state=ready admission=true
+2026/08/06 14:27:02 shutdown: final=stopped leaked=0 err=<nil>
+```
+
 关键行为：
 
 - **启动**：组件按依赖拓扑序逐个 `Start` + `Ready` 探测。`Required` 组件失败即中止启动，已启动的组件在 `StartupRollback` 预算内逆序 `Close`，`Start` 返回包裹 `ErrStartupFailed` 的错误；`Optional` 组件失败只记入健康报告，进程以 `StateDegraded` 就绪，admission 照常打开。

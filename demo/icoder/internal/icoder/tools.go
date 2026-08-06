@@ -26,17 +26,22 @@ func (t *authorizedTool) ReplayPolicy() agent.ReplayPolicy { return t.tool.Repla
 func (t *authorizedTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
 	inputDigest := permission.InputDigest(digest([]byte(invocation.RawInput)))
 	sessionID := t.sessionID()
-	requestKey := permission.RequestKey(digest([]byte(sessionID + "\x00" + invocation.CallID + "\x00" + invocation.Name + "\x00" + invocation.RawInput)))
-	decision, err := t.permission.Check(ctx, permission.CheckRequest{
+	run := currentRunContext(ctx)
+	if run.id == "" {
+		run.id = sessionID
+	}
+	requestKey := permission.RequestKey(digest([]byte(run.id + "\x00" + invocation.CallID + "\x00" + invocation.Name + "\x00" + invocation.RawInput)))
+	check := permission.CheckRequest{
 		RequestKey: requestKey,
 		Subject:    permission.Subject{TenantKey: "local", PrincipalKey: "cli-user", ActorType: "human"},
 		Resource:   t.resource(invocation.RawInput), SessionRef: sessionID,
-		RunRef: permission.RunRef(sessionID), AttemptRef: permission.AttemptRef(invocation.CallID),
-		ExecutionRef: permission.ExecutionRef(invocation.CallID), FenceToken: 1,
+		RunRef: permission.RunRef(run.id), AttemptRef: permission.AttemptRef(run.id),
+		ExecutionRef: permission.ExecutionRef(requestKey), FenceToken: 1,
 		ToolCallID: invocation.CallID, ToolName: invocation.Name, Action: t.action,
 		InputDigest: inputDigest, ToolGeneration: "icoder-tools-v1", DefinitionDigest: "icoder-v1",
 		PolicyVersion: policyVersion, ApprovalExpiresAt: time.Now().Add(15 * time.Minute),
-	})
+	}
+	decision, err := t.permission.Check(ctx, check)
 	if err != nil {
 		return agent.ToolResult{}, err
 	}
@@ -44,10 +49,49 @@ func (t *authorizedTool) Execute(ctx context.Context, invocation agent.ToolInvoc
 	case permission.DecisionAllow:
 		return t.tool.Execute(ctx, invocation)
 	case permission.DecisionAsk:
-		return agent.ToolResult{IsError: true, StopTurn: true, Content: fmt.Sprintf("approval required: request=%s token=%s", decision.Blocker.RequestRef, decision.Blocker.ResumeToken)}, nil
+		return t.askAndExecute(ctx, invocation, check, decision, run.approve)
 	default:
 		return agent.ToolResult{IsError: true, StopTurn: true, Content: "permission denied: " + decision.ReasonCode}, nil
 	}
+}
+
+func (t *authorizedTool) askAndExecute(ctx context.Context, invocation agent.ToolInvocation, check permission.CheckRequest, result permission.CheckResult, approve ApprovalFunc) (agent.ToolResult, error) {
+	if approve == nil || result.Approval == nil || result.Blocker == nil {
+		return agent.ToolResult{IsError: true, StopTurn: true, Content: "permission denied: interactive approval is unavailable"}, nil
+	}
+	choice, err := approve(ctx, ApprovalPrompt{ToolName: invocation.Name, Action: t.action, Resource: check.Resource.Key, Input: approvalInput(invocation.RawInput)})
+	if err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		_, _, _ = t.permission.Cancel(cleanupCtx, permission.CancelCommand{TenantKey: check.Subject.TenantKey, RequestKey: check.RequestKey, ExpectedRevision: result.Approval.Request.Revision, AttemptRef: check.AttemptRef, FenceToken: check.FenceToken})
+		return agent.ToolResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return agent.ToolResult{}, err
+	}
+	kind, reason := permission.ResolutionDeny, "user-rejected"
+	if choice == ApprovalApproveOnce {
+		kind, reason = permission.ResolutionApprove, "user-approved-once"
+	}
+	commandKey := string(check.RequestKey) + ":" + string(kind)
+	_, _, err = t.permission.Resolve(ctx, permission.ResolveCommand{TenantKey: check.Subject.TenantKey, RequestKey: check.RequestKey, CommandKey: commandKey, DecisionKey: permission.DecisionKey(commandKey), ApproverKey: "cli-user", ExpectedRevision: result.Approval.Request.Revision, Kind: kind, ReasonCode: reason})
+	if err != nil {
+		return agent.ToolResult{}, err
+	}
+	if kind == permission.ResolutionDeny {
+		return agent.ToolResult{IsError: true, StopTurn: true, Content: "permission denied by user"}, nil
+	}
+	revalidated, err := t.permission.Revalidate(ctx, permission.RevalidateCommand{TenantKey: check.Subject.TenantKey, RequestKey: check.RequestKey, ResumeToken: result.Blocker.ResumeToken, AttemptRef: check.AttemptRef, FenceToken: check.FenceToken, InputDigest: check.InputDigest, PolicyVersion: check.PolicyVersion, ToolGeneration: check.ToolGeneration})
+	if err != nil {
+		return agent.ToolResult{}, err
+	}
+	if revalidated.Decision != permission.DecisionAllow {
+		return agent.ToolResult{}, fmt.Errorf("permission revalidation did not allow execution")
+	}
+	if err := ctx.Err(); err != nil {
+		return agent.ToolResult{}, err
+	}
+	return t.tool.Execute(ctx, invocation)
 }
 
 func NewPermissionService(allowWrites bool) (permission.Service, error) {
@@ -74,7 +118,7 @@ func NewPermissionService(allowWrites bool) (permission.Service, error) {
 type readFileTool struct{ workspace *Workspace }
 
 func (t readFileTool) Definition() agent.ToolDefinition {
-	return agent.ToolDefinition{Name: "read_file", Description: "Read a UTF-8 text file inside the workspace.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}, "required": []any{"path"}}}
+	return agent.ToolDefinition{Name: "read_file", Description: "Read a range from a UTF-8 text file with line numbers, digest, and truncation metadata.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "offset": map[string]any{"type": "integer", "minimum": 1}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 2000}}, "required": []any{"path"}}}
 }
 
 type listFilesTool struct{ workspace *Workspace }
@@ -113,25 +157,38 @@ func (t listFilesTool) Execute(ctx context.Context, invocation agent.ToolInvocat
 func (readFileTool) ReplayPolicy() agent.ReplayPolicy { return agent.ReplayPolicyIdempotent }
 func (t readFileTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
 	var input struct {
-		Path string `json:"path"`
+		Path   string `json:"path"`
+		Offset int    `json:"offset"`
+		Limit  int    `json:"limit"`
 	}
 	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
 		return agent.ToolResult{}, err
 	}
-	content, err := t.workspace.ReadFile(ctx, input.Path)
+	if input.Offset == 0 && input.Limit == 0 {
+		content, err := t.workspace.ReadFile(ctx, input.Path)
+		if err != nil {
+			return agent.ToolResult{Content: err.Error(), IsError: true}, nil
+		}
+		return agent.ToolResult{Content: content}, nil
+	}
+	content, err := t.workspace.ReadFileLines(ctx, input.Path, input.Offset, input.Limit)
 	if err != nil {
 		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
 	}
-	return agent.ToolResult{Content: content}, nil
+	data, err := marshalString(content)
+	if err != nil {
+		return agent.ToolResult{}, err
+	}
+	return agent.ToolResult{Content: data}, nil
 }
 
-type searchCodeTool struct{ workspace *Workspace }
+type globFilesTool struct{ workspace *Workspace }
 
-func (t searchCodeTool) Definition() agent.ToolDefinition {
-	return agent.ToolDefinition{Name: "search_code", Description: "Search literal text in workspace files.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"pattern": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 200}}, "required": []any{"pattern"}}}
+func (t globFilesTool) Definition() agent.ToolDefinition {
+	return agent.ToolDefinition{Name: "glob_files", Description: "Find workspace files by glob pattern, for example **/*.go.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"pattern": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 2000}}, "required": []any{"pattern"}}}
 }
-func (searchCodeTool) ReplayPolicy() agent.ReplayPolicy { return agent.ReplayPolicyIdempotent }
-func (t searchCodeTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
+func (globFilesTool) ReplayPolicy() agent.ReplayPolicy { return agent.ReplayPolicyIdempotent }
+func (t globFilesTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
 	var input struct {
 		Pattern string `json:"pattern"`
 		Limit   int    `json:"limit"`
@@ -139,7 +196,31 @@ func (t searchCodeTool) Execute(ctx context.Context, invocation agent.ToolInvoca
 	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
 		return agent.ToolResult{}, err
 	}
-	matches, err := t.workspace.Search(ctx, input.Pattern, input.Limit)
+	files, err := t.workspace.Glob(ctx, input.Pattern, input.Limit)
+	if err != nil {
+		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
+	}
+	data, err := marshalString(files)
+	return agent.ToolResult{Content: data}, err
+}
+
+type searchCodeTool struct{ workspace *Workspace }
+
+func (t searchCodeTool) Definition() agent.ToolDefinition {
+	return agent.ToolDefinition{Name: "search_code", Description: "Search text or regular expressions in workspace files, optionally filtered by a glob.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"pattern": map[string]any{"type": "string"}, "regex": map[string]any{"type": "boolean"}, "include": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 500}}, "required": []any{"pattern"}}}
+}
+func (searchCodeTool) ReplayPolicy() agent.ReplayPolicy { return agent.ReplayPolicyIdempotent }
+func (t searchCodeTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
+	var input struct {
+		Pattern string `json:"pattern"`
+		Regex   bool   `json:"regex"`
+		Include string `json:"include"`
+		Limit   int    `json:"limit"`
+	}
+	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
+		return agent.ToolResult{}, err
+	}
+	matches, err := t.workspace.SearchPattern(ctx, input.Pattern, input.Include, input.Regex, input.Limit)
 	if err != nil {
 		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
 	}
@@ -152,11 +233,79 @@ func (t searchCodeTool) Execute(ctx context.Context, invocation agent.ToolInvoca
 
 type writeFileTool struct{ workspace *Workspace }
 
+type editFileTool struct{ workspace *Workspace }
+
+func (t editFileTool) Definition() agent.ToolDefinition {
+	return agent.ToolDefinition{Name: "edit_file", Description: "Replace an exact text fragment in an existing file. Fails on ambiguous or stale edits.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "old_text": map[string]any{"type": "string"}, "new_text": map[string]any{"type": "string"}, "expected_digest": map[string]any{"type": "string"}, "replace_all": map[string]any{"type": "boolean"}}, "required": []any{"path", "old_text", "new_text"}}}
+}
+func (editFileTool) ReplayPolicy() agent.ReplayPolicy { return agent.ReplayPolicyNever }
+func (t editFileTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
+	var input struct {
+		Path           string `json:"path"`
+		OldText        string `json:"old_text"`
+		NewText        string `json:"new_text"`
+		ExpectedDigest string `json:"expected_digest"`
+		ReplaceAll     bool   `json:"replace_all"`
+	}
+	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
+		return agent.ToolResult{}, err
+	}
+	value, err := t.workspace.EditFile(ctx, input.Path, input.OldText, input.NewText, input.ExpectedDigest, input.ReplaceAll)
+	if err != nil {
+		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
+	}
+	return agent.ToolResult{Content: `{"digest":"` + value + `"}`}, nil
+}
+
 func (t writeFileTool) Definition() agent.ToolDefinition {
 	return agent.ToolDefinition{Name: "write_file", Description: "Replace one file inside the workspace. Requires permission.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}, "expected_digest": map[string]any{"type": "string"}}, "required": []any{"path", "content"}}}
 }
 
 type runCommandTool struct{ workspace *Workspace }
+
+type gitStatusTool struct{ workspace *Workspace }
+
+func (t gitStatusTool) Definition() agent.ToolDefinition {
+	return agent.ToolDefinition{Name: "git_status", Description: "Show concise Git workspace status without modifying files.", Strict: true, Parameters: map[string]any{"type": "object"}}
+}
+func (gitStatusTool) ReplayPolicy() agent.ReplayPolicy { return agent.ReplayPolicyIdempotent }
+func (t gitStatusTool) Execute(ctx context.Context, _ agent.ToolInvocation) (agent.ToolResult, error) {
+	result, err := t.workspace.RunCommand(ctx, "git", []string{"status", "--short", "--branch"}, 30*time.Second)
+	if err != nil {
+		return agent.ToolResult{}, err
+	}
+	data, err := marshalString(result)
+	return agent.ToolResult{Content: data, IsError: result.ExitCode != 0}, err
+}
+
+type gitDiffTool struct{ workspace *Workspace }
+
+func (t gitDiffTool) Definition() agent.ToolDefinition {
+	return agent.ToolDefinition{Name: "git_diff", Description: "Show the current Git diff without external diff drivers.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"staged": map[string]any{"type": "boolean"}, "stat": map[string]any{"type": "boolean"}}}}
+}
+func (gitDiffTool) ReplayPolicy() agent.ReplayPolicy { return agent.ReplayPolicyIdempotent }
+func (t gitDiffTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
+	var input struct {
+		Staged bool `json:"staged"`
+		Stat   bool `json:"stat"`
+	}
+	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
+		return agent.ToolResult{}, err
+	}
+	args := []string{"diff", "--no-ext-diff"}
+	if input.Staged {
+		args = append(args, "--cached")
+	}
+	if input.Stat {
+		args = append(args, "--stat")
+	}
+	result, err := t.workspace.RunCommand(ctx, "git", args, 30*time.Second)
+	if err != nil {
+		return agent.ToolResult{}, err
+	}
+	data, err := marshalString(result)
+	return agent.ToolResult{Content: data, IsError: result.ExitCode != 0}, err
+}
 
 func (t runCommandTool) Definition() agent.ToolDefinition {
 	return agent.ToolDefinition{Name: "run_command", Description: "Run an approved build, test, format, or Git inspection command in the workspace. Requires permission.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"program": map[string]any{"type": "string", "enum": []any{"go", "git"}}, "args": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 120}}, "required": []any{"program", "args"}}}
@@ -227,9 +376,13 @@ func registerTools(registry *agent.Registry, workspace *Workspace, weather Weath
 	}{
 		{workingDirectoryTool{workspace: workspace}, "workspace.read"},
 		{listFilesTool{workspace: workspace}, "workspace.read"},
+		{globFilesTool{workspace: workspace}, "workspace.read"},
 		{readFileTool{workspace: workspace}, "workspace.read"},
 		{searchCodeTool{workspace: workspace}, "workspace.search"},
+		{gitStatusTool{workspace: workspace}, "workspace.read"},
+		{gitDiffTool{workspace: workspace}, "workspace.read"},
 		{writeFileTool{workspace: workspace}, "workspace.write"},
+		{editFileTool{workspace: workspace}, "workspace.write"},
 		{runCommandTool{workspace: workspace}, "workspace.command"},
 		{weatherTool{provider: weather}, "network.read"},
 	}

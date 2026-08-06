@@ -114,6 +114,14 @@ func main() {
 }
 ```
 
+运行输出：
+
+```text
+spawned: run/c7e3d980eae0577952b4f4e6f85eb8f5 queued
+child finished: run/c7e3d980eae0577952b4f4e6f85eb8f5 completed
+wakes delivered: 1
+```
+
 关键行为：
 
 - `Spawn` 以 `(TenantKey, RequestKey)` 幂等：同键同内容返回同一张回执；同键不同内容返回 `ErrIdempotencyConflict`。`RequestKey`、`Parent` 三要素、`AgentKey`、非空 `Input` 都是必填。

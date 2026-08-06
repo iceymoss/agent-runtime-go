@@ -1,4 +1,9 @@
 /.idea/
 /docs-site/node_modules/
 /docs-site/*.tsbuildinfo
+/docs-site/.vitepress/cache/
+/docs-site/.vitepress/dist/
 /cmd/docs/dist/
+/demo/icoder/.icoder.db
+/demo/icoder/.icoder.db-shm
+/demo/icoder/.icoder.db-wal

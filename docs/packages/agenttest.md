@@ -53,6 +53,22 @@ func TestConformance(t *testing.T) {
 }
 ```
 
+运行输出：
+
+```text
+=== RUN   TestConformance
+=== RUN   TestConformance/valid_stream
+=== RUN   TestConformance/missing_terminal
+...（其余 case 的 RUN 行略）
+--- PASS: TestConformance (0.12s)
+    --- PASS: TestConformance/valid_stream (0.03s)
+    --- PASS: TestConformance/missing_terminal (0.00s)
+    ...（after_terminal / invalid_usage / rejected / auth / rate_limit / transport / provider_detail 均 PASS）
+    --- PASS: TestConformance/cancellation (0.02s)
+PASS
+ok  	example/myprovider	0.127s
+```
+
 工厂返回的适配器必须满足套件对每个 case 的预期：
 
 - **`ModelCaseValidStream`**：`Name()` 非空；`Capabilities()` 通过 `Validate()` 且 `Tools`、`ToolChoiceNone`、`ToolChoiceRequired`、`ToolChoiceNamed`、`UsageDetails` 全为 `true`。流内容有硬编码约定——文本增量拼起来是 `"hello world"`；两个工具调用依次为 ID `call_a`、名字 `first`、输入 `{"a":0}` 和 ID `call_b`、名字 `second`、输入 `{"b":1}`；usage 为 `PromptTokens: 5, CompletionTokens: 4, TotalTokens: 11, CacheReadTokens: 2`；`FinishReason` 为 `agent.FinishToolCalls`。你的 fixture 上游必须产出恰好映射成这些值的响应。
@@ -73,6 +89,17 @@ func TestMyTool(t *testing.T) {
 		},
 	})
 }
+```
+
+运行输出：
+
+```text
+=== RUN   TestMyTool
+=== RUN   TestMyTool/echoes_input
+--- PASS: TestMyTool (0.00s)
+    --- PASS: TestMyTool/echoes_input (0.00s)
+PASS
+ok  	example/tooltest	0.006s
 ```
 
 ## 常见问题

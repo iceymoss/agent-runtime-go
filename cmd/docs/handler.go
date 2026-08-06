@@ -14,19 +14,22 @@ func spaHandler(assets fs.FS) http.Handler {
 		if requested == "." || requested == "" {
 			requested = "index.html"
 		}
-		if info, err := fs.Stat(assets, requested); err == nil && !info.IsDir() {
+		resolved := requested
+		if info, err := fs.Stat(assets, resolved); err != nil || info.IsDir() {
+			resolved = strings.TrimSuffix(requested, "/") + ".html"
+		}
+		if info, err := fs.Stat(assets, resolved); err == nil && !info.IsDir() {
 			if strings.HasPrefix(requested, "assets/") {
 				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			} else if strings.HasSuffix(resolved, ".html") {
+				w.Header().Set("Cache-Control", "no-cache")
+			}
+			if resolved != requested {
+				r.URL.Path = "/" + resolved
 			}
 			files.ServeHTTP(w, r)
 			return
 		}
-		if strings.Contains(path.Base(requested), ".") {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Cache-Control", "no-cache")
-		r.URL.Path = "/"
-		files.ServeHTTP(w, r)
+		http.NotFound(w, r)
 	})
 }

@@ -1,6 +1,6 @@
 # iCoder 端到端教程
 
-本文面向想看一个完整可运行组合示例的开发者：[`demo/icoder`](../demo/icoder/README.md) 是一个 Code Agent reference application，把根包的 model/tool loop 与 Prompt、Context、Skills、Permission、MCP、Sub-Agent 和 SQLite 组合在一个独立 Go module 中。本文说明如何运行它、代码结构如何映射到各子包，以及它刻意保留的 demo 边界。
+本文面向想看一个完整可运行组合示例的开发者：[`demo/icoder`](https://github.com/iceymoss/agent-runtime-go/tree/main/demo/icoder) 是一个 Code Agent reference application，把根包的 model/tool loop 与 Prompt、Context、Skills、Permission、MCP、Sub-Agent 和 SQLite 组合在一个独立 Go module 中。本文说明如何运行它、代码结构如何映射到各子包，以及它刻意保留的 demo 边界。
 
 ## 代码结构与子包映射
 

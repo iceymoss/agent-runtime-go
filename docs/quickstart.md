@@ -11,10 +11,29 @@ go run ./examples/hello        # 一次模型直答
 go run ./examples/tool-agent   # 完整的两步工具循环
 ```
 
+运行输出：
+
+```text
+$ go run ./examples/hello
+Hello from Agent Runtime for Go.
+
+$ go run ./examples/tool-agent
+Hangzhou is sunny and 28 C.
+```
+
 有任意 OpenAI 兼容的 API key（OpenAI / DeepSeek / Qwen / Kimi，或本地 Ollama）就可以跑真实模型：
 
 ```bash
 OPENAI_API_KEY=sk-... go run ./examples/openai-compat
+```
+
+输出示意（实际内容因模型而异）：
+
+```text
+[tool call] get_time {"timezone":"Asia/Shanghai"}
+The current date and time in Shanghai is Thu, 06 Aug 2026 12:45:10 CST.
+
+[gpt-4o-mini] stop=complete steps=2 tokens=421
 ```
 
 ## 在自己的项目里从零搭一个
@@ -129,6 +148,6 @@ DEEPSEEK_API_KEY=sk-... go run .
 
 - 想懂核心类型和执行语义 → [核心概念](concepts.md)
 - 适配器全部选项（本地 Ollama、OpenRouter、非流式降级）→ [providers/openaicompat](packages/openaicompat.md)
-- 根包完整能力（白名单、停止条件、进度观察）→ [agent（根包）](packages/agent.md)
+- 核心执行能力（白名单、停止条件、进度观察）→ [agent](packages/agent.md)
 - 多轮会话、持久化、崩溃恢复 → [session](packages/session.md)、[durable](packages/durable.md)
 - 完整参考应用（权限、SQLite、Skills、MCP、子 Agent）→ [iCoder 教程](icoder.md)

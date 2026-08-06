@@ -114,6 +114,13 @@ func main() {
 }
 ```
 
+输出示意（示例中的 `https://mcp.example.com` 并非真实端点，需要可访问的 MCP server 才能运行；输出结构与包内测试锁定的行为一致）：
+
+```text
+mcp__search__lookup
+Go is an open source programming language that makes it easy to build simple, reliable, and efficient software.
+```
+
 关键行为：
 
 - `NewManager` 不连接任何东西；`StartScope` 才对该租户拉配置并建连，租户之间完全独立（外部测试验证构造函数不枚举租户）。

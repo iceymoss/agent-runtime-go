@@ -1,4 +1,8 @@
-# Agent Runtime for Go
+<p align="center">
+  <img src="docs-site/public/logo.svg" width="112" height="112" alt="Agent Runtime for Go logo">
+</p>
+
+<h1 align="center">Agent Runtime for Go</h1>
 
 English | [简体中文](README.zh-CN.md)
 
@@ -250,7 +254,7 @@ Import only what your current requirements need.
 | Readiness and bounded shutdown | `app` |
 | Adapter conformance tests | `agenttest`, test-only |
 
-Each subpackage has its own guide covering what it is, why it exists, and how to use it; see the [documentation index](docs/README.md).
+Each subpackage has its own guide covering what it is, why it exists, and how to use it; see the [documentation introduction](docs/README.md).
 
 ## How it works
 
@@ -293,11 +297,11 @@ See [runtime internals](docs/internals.md) for detailed execution semantics.
 
 ## Documentation
 
-Documentation is currently written in Chinese; the code and API docs are in English. Start from the [documentation index](docs/README.md).
+Docs are bilingual. English: [docs/en](docs/en/README.md). Chinese (default site locale): [docs](docs/README.md).
 
-- Getting started: [Quickstart](docs/quickstart.md) · [Core concepts](docs/concepts.md)
-- Package guides (one document per package, each covering what it is, why it exists, how to use it, and FAQs): see [`docs/packages/`](docs/README.md#子包指南), starting with the [root package](docs/packages/agent.md) and [providers/openaicompat](docs/packages/openaicompat.md)
-- Advanced: [Runtime internals](docs/internals.md) · [Production patterns](docs/production.md) · [iCoder tutorial](docs/icoder.md) · [Reference](docs/reference.md)
+- Getting started: [Quickstart](docs/en/quickstart.md) · [Core concepts](docs/en/concepts.md)
+- Package guides (one document per package): see [`docs/en/packages/`](docs/en/packages/), starting with the [root package](docs/en/packages/agent.md) and [providers/openaicompat](docs/en/packages/openaicompat.md)
+- Advanced: [Runtime internals](docs/en/internals.md) · [Production patterns](docs/en/production.md) · [iCoder tutorial](docs/en/icoder.md) · [Reference](docs/en/reference.md)
 
 ## Key semantics
 
