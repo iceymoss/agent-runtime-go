@@ -395,6 +395,8 @@ func (a *App) DispatchOutbox(ctx context.Context, publisher event.Publisher, lim
 
 func (a *App) SessionID() string { return a.state.Get() }
 
+func (a *App) ModelName() string { return a.config.Model }
+
 func (a *App) UseSession(ctx context.Context, id string) error {
 	if id == "" {
 		return fmt.Errorf("session ID is required")

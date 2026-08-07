@@ -92,7 +92,7 @@ func TestModelSelectsAutoApprovalWithTab(t *testing.T) {
 func TestModelAutoApprovalScopesAreActionSpecific(t *testing.T) {
 	model := New(context.Background(), nil, nil)
 	model.grantAutoScope("workspace.write")
-	if !model.hasAutoScope("workspace.write") || model.hasAutoScope("workspace.command") || !strings.Contains(model.statusView(), "AUTO writes") {
+	if !model.hasAutoScope("workspace.write") || model.hasAutoScope("workspace.command") || !strings.Contains(model.statusView(), "AUTO: writes") {
 		t.Fatalf("scopes=%v status=%q", model.currentApprovalScopes(), model.statusView())
 	}
 	model.clearCurrentApprovalScopes()
@@ -173,18 +173,18 @@ func TestTruncateLineKeepsRightmostWorkspacePath(t *testing.T) {
 func TestNarrowStatusHidesShortcutHints(t *testing.T) {
 	model := Model{width: 24, latestStatus: "ready"}
 	status := model.statusView()
-	if !strings.Contains(status, "ready") || strings.Contains(status, "commands") || lipgloss.Width(status) > model.contentWidth() {
+	if !strings.Contains(status, "manual mode on") || strings.Contains(status, "commands") || lipgloss.Width(status) > model.contentWidth() {
 		t.Fatalf("status = %q width=%d", status, lipgloss.Width(status))
 	}
 }
 
-func TestApprovalViewCapsWidthAndSummarizesTarget(t *testing.T) {
+func TestApprovalViewUsesWorkspaceWidthAndSummarizesTarget(t *testing.T) {
 	model := Model{width: 300, pending: &approvalEvent{prompt: icoder.ApprovalPrompt{
 		ToolName: "create_directory", Action: "workspace.write", Resource: "/home/jeff/icey/open-source/agent-runtime-go/demo/icoder",
 		Input: `{"parents":true,"path":"rust_beginner/src"}`, ExpiresAt: time.Date(2026, 8, 7, 17, 47, 36, 0, time.Local),
 	}}}
 	view := model.approvalView()
-	if lipgloss.Width(view) > 76 || !strings.Contains(view, "target") || !strings.Contains(view, "rust_beginner/src") || !strings.Contains(view, "parents") || strings.Contains(view, `"path"`) {
+	if lipgloss.Width(view) != model.contentWidth() || !strings.Contains(view, "target") || !strings.Contains(view, "rust_beginner/src") || !strings.Contains(view, "parents") || strings.Contains(view, `"path"`) {
 		t.Fatalf("approval width=%d view=%q", lipgloss.Width(view), view)
 	}
 }
@@ -201,16 +201,15 @@ func TestNarrowApprovalStacksActions(t *testing.T) {
 			hintLine = index
 		}
 	}
-	if lipgloss.Width(view) > model.contentWidth() || choicesLine < 0 || hintLine <= choicesLine+2 || !strings.Contains(view, "2. Yes, allow safe commands") || !strings.Contains(view, "for this session") || !strings.Contains(view, "3. No") {
+	if lipgloss.Width(view) > model.contentWidth() || choicesLine < 0 || hintLine <= choicesLine+2 || !strings.Contains(view, "2. Yes, allow safe commands") || !strings.Contains(view, "session") || !strings.Contains(view, "3. No") {
 		t.Fatalf("approval width=%d contentWidth=%d view=%q", lipgloss.Width(view), model.contentWidth(), view)
 	}
 }
 
-func TestContentColumnCapsAndCentersOnWideTerminal(t *testing.T) {
+func TestContentColumnUsesWideTerminalWorkspace(t *testing.T) {
 	model := Model{width: 180}
 	view := model.columnView("content")
-	wantGutter := (180 - 100) / 2
-	if model.contentWidth() != 100 || !strings.HasPrefix(view, strings.Repeat(" ", wantGutter)) || lipgloss.Width(view) != wantGutter+100 {
+	if model.contentWidth() != 178 || !strings.HasPrefix(view, " content") || lipgloss.Width(view) != 179 {
 		t.Fatalf("contentWidth=%d renderedWidth=%d view=%q", model.contentWidth(), lipgloss.Width(view), view)
 	}
 }
@@ -219,6 +218,7 @@ func TestApprovalFooterShrinksTranscriptToTerminalHeight(t *testing.T) {
 	model := New(context.Background(), nil, nil)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	model = updated.(Model)
+	model.running = true
 	model.pending = &approvalEvent{prompt: icoder.ApprovalPrompt{ToolName: "create_directory", Action: "workspace.write", Resource: "/workspace", Input: `{"path":"src"}`}}
 	footer := model.footerView()
 	transcript := model.transcriptView(footer)
@@ -233,8 +233,18 @@ func TestEmptyTranscriptShowsTaskPrompt(t *testing.T) {
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 	view := model.View()
-	if !strings.Contains(view, "What would you like to build?") || !strings.Contains(view, "Describe a task") {
+	if !strings.Contains(view, "Welcome back!") || !strings.Contains(view, "Try \"fix lint errors\"") || strings.Count(view, "❯") != 1 {
 		t.Fatalf("view = %q", view)
+	}
+}
+
+func TestWideWelcomeUsesTwoColumnPanel(t *testing.T) {
+	model := New(context.Background(), nil, nil)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 180, Height: 32})
+	model = updated.(Model)
+	view := model.View()
+	if !strings.Contains(view, "Welcome back!") || !strings.Contains(view, "Tips for getting started") || !strings.Contains(view, " │ ") || !strings.Contains(view, "manual mode on") || lipgloss.Width(view) > model.width {
+		t.Fatalf("view width=%d view=%q", lipgloss.Width(view), view)
 	}
 }
 

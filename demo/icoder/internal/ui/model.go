@@ -123,8 +123,8 @@ var slashCommands = []struct{ name, description string }{
 
 func New(ctx context.Context, app *icoder.App, history []agent.Message) Model {
 	input := textarea.New()
-	input.Placeholder, input.Prompt = "Describe a coding task, or type / for commands...", "> "
-	input.SetHeight(3)
+	input.Placeholder, input.Prompt = "Try \"fix lint errors\"", "❯ "
+	input.SetHeight(1)
 	input.CharLimit, input.ShowLineNumbers = 32<<10, false
 	input.Focus()
 	input.KeyMap.InsertNewline.SetKeys("alt+enter", "ctrl+j")
@@ -143,7 +143,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.viewport.Width, m.viewport.Height = m.contentWidth(), max(3, msg.Height-8)
-		m.input.SetWidth(max(16, m.contentWidth()-8))
+		m.input.SetWidth(max(16, m.contentWidth()-4))
 		m.syncViewport(true)
 	case tea.KeyMsg:
 		if m.sessionPicker {
@@ -350,6 +350,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	if !m.running && !m.sessionPicker {
 		m.input, cmd = m.input.Update(message)
+		m.input.SetHeight(min(4, max(1, strings.Count(m.input.Value(), "\n")+1)))
 		commands = append(commands, cmd)
 	}
 	m.viewport, cmd = m.viewport.Update(message)
@@ -370,6 +371,10 @@ func (m Model) View() string {
 		return m.columnView(content)
 	}
 	footer := m.footerView()
+	if len(m.items) == 0 && strings.TrimSpace(m.streamed) == "" && !m.running {
+		body := m.welcomeTranscriptView(footer)
+		return m.columnView(body + "\n" + footer)
+	}
 	body := m.transcriptView(footer)
 	return m.columnView(header + "\n\n" + body + "\n" + footer)
 }
@@ -397,26 +402,76 @@ func (m Model) transcriptView(footer string) string {
 		height = 24
 	}
 	viewport.Height = max(3, height-lipgloss.Height(footer)-3)
-	if len(m.items) == 0 && strings.TrimSpace(m.streamed) == "" {
-		viewport.SetContent(m.emptyView())
-	}
 	return viewport.View()
 }
 
-func (m Model) emptyView() string {
-	return "\n" + agentStyle.Render("What would you like to build?") + "\n" + dimStyle.Render("Describe a task, ask about the codebase, or type / for commands.")
+func (m Model) welcomeTranscriptView(footer string) string {
+	viewport := m.viewport
+	viewport.Width = m.contentWidth()
+	height := m.height
+	if height <= 0 {
+		height = 24
+	}
+	viewport.Height = max(3, height-lipgloss.Height(footer)-1)
+	viewport.SetContent(m.welcomeView())
+	return viewport.View()
 }
 
 func (m Model) columnView(content string) string {
-	gutter := max(0, (m.width-m.contentWidth())/2)
-	return lipgloss.NewStyle().Width(m.contentWidth()).MarginLeft(gutter).Render(content)
+	return lipgloss.NewStyle().Width(m.contentWidth()).MarginLeft(1).Render(content)
 }
 
 func (m Model) contentWidth() int {
 	if m.width <= 0 {
 		return 76
 	}
-	return min(100, max(20, m.width-4))
+	return max(20, m.width-2)
+}
+
+func (m Model) welcomeView() string {
+	width := m.contentWidth()
+	model, session, workspace, tools := "configured model", "new session", "workspace", 0
+	if m.app != nil {
+		model, session, workspace, tools = m.app.ModelName(), m.app.SessionID(), m.app.WorkingDirectory(), len(m.app.Tools())
+	}
+	left := lipgloss.NewStyle().Align(lipgloss.Center).Render(
+		agentStyle.Render("Welcome back!") + "\n\n" +
+			warningStyle.Render("  ▐▛███▜▌  ") + "\n" +
+			warningStyle.Render(" ▝▜█████▛▘ ") + "\n" +
+			warningStyle.Render("   ▘▘ ▝▝   ") + "\n\n" +
+			dimStyle.Render(model+" · "+fmt.Sprintf("%d tools", tools)) + "\n" +
+			dimStyle.Render(truncateLine(session, 30)) + "\n" +
+			dimStyle.Render(truncateLine(workspace, 42)),
+	)
+	right := toolStyle.Bold(true).Render("Tips for getting started") + "\n\n" +
+		"Ask iCoder to inspect, edit, and verify your code." + "\n" +
+		dimStyle.Render(strings.Repeat("─", 34)) + "\n\n" +
+		toolStyle.Bold(true).Render("Quick commands") + "\n" +
+		"Type / to browse commands" + "\n" +
+		"Use /permissions to review AUTO scopes" + "\n" +
+		"Press Ctrl+O to expand tool details"
+	if width < 90 {
+		return titledFrame("iCoder", left, width)
+	}
+	leftWidth := min(46, max(34, width/3))
+	rightWidth := max(30, width-leftWidth-5)
+	columns := lipgloss.JoinHorizontal(lipgloss.Top,
+		lipgloss.NewStyle().Width(leftWidth).Render(left),
+		dimStyle.Render(" │ "),
+		lipgloss.NewStyle().Width(rightWidth).Render(right),
+	)
+	return titledFrame("iCoder", columns, width)
+}
+
+func titledFrame(title, content string, width int) string {
+	inner := max(1, width-2)
+	title = "─── " + title + " "
+	top := "╭" + title + strings.Repeat("─", max(0, inner-lipgloss.Width(title))) + "╮"
+	lines := strings.Split(lipgloss.NewStyle().Width(inner).Render(content), "\n")
+	for index, line := range lines {
+		lines[index] = "│" + line + strings.Repeat(" ", max(0, inner-lipgloss.Width(line))) + "│"
+	}
+	return top + "\n" + strings.Join(lines, "\n") + "\n╰" + strings.Repeat("─", inner) + "╯"
 }
 
 func (m Model) headerView() string {
@@ -437,22 +492,13 @@ func (m Model) headerView() string {
 }
 
 func (m Model) composerView() string {
-	return lipgloss.NewStyle().
-		Width(max(16, m.contentWidth()-4)).
-		Padding(0, 1).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(accentSoft).
-		Render(m.input.View())
+	rule := dimStyle.Render(strings.Repeat("─", m.contentWidth()))
+	return rule + "\n" + m.input.View() + "\n" + rule
 }
 
 func (m Model) runningView() string {
-	return lipgloss.NewStyle().
-		Width(max(16, m.contentWidth()-4)).
-		Padding(0, 1).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(subtle).
-		Foreground(muted).
-		Render(m.spinner.View() + " Working on this task. Input unlocks when the run finishes.")
+	rule := dimStyle.Render(strings.Repeat("─", m.contentWidth()))
+	return rule + "\n" + warningStyle.Render(m.spinner.View()+" Working on this task") + dimStyle.Render(" · input unlocks when the run finishes") + "\n" + rule
 }
 
 func (m *Model) applyObservation(observation agent.Observation) {
@@ -634,7 +680,7 @@ func (m *Model) cancelRun() {
 
 func (m Model) approvalView() string {
 	p := m.pending.prompt
-	panelWidth := min(72, max(16, m.contentWidth()-4))
+	panelWidth := m.contentWidth()
 	heading := warningStyle.Bold(true).Render("Permission required")
 	if !p.ExpiresAt.IsZero() {
 		expires := dimStyle.Render("expires " + p.ExpiresAt.Local().Format("15:04:05"))
@@ -648,8 +694,10 @@ func (m Model) approvalView() string {
 	if m.pending.submitted {
 		actions = warningStyle.Render(m.spinner.View()+" Checking approval status") + "    " + dimStyle.Render("ctrl+c  cancel")
 	}
+	rule := dimStyle.Render(strings.Repeat("─", panelWidth))
 	content := heading + "\n" + meta + "\n\n" + details + "\n\n" + actions
-	return lipgloss.NewStyle().Width(panelWidth).Padding(1, 1).Border(lipgloss.RoundedBorder()).BorderForeground(warningStyle.GetForeground()).Render(content)
+	content = lipgloss.NewStyle().Width(panelWidth).Render(content)
+	return rule + "\n" + content + "\n" + rule
 }
 
 func approvalDetails(prompt icoder.ApprovalPrompt, width int) string {
@@ -801,11 +849,14 @@ func (m Model) statusView() string {
 			status = "ready"
 		}
 		if scopes := m.currentApprovalScopes(); len(scopes) > 0 {
-			left = warningStyle.Bold(true).Render("AUTO "+strings.Join(scopes, ", ")) + "  " + dimStyle.Render(status)
+			left = warningStyle.Bold(true).Render("AUTO: "+strings.Join(scopes, ", ")) + "  " + dimStyle.Render(status)
 		} else {
-			left = dimStyle.Render(status)
+			left = dimStyle.Render("manual mode on")
+			if status != "ready" {
+				left += dimStyle.Render(" · " + status)
+			}
 		}
-		right = dimStyle.Render("enter send   ctrl+p commands   /permissions")
+		right = dimStyle.Render("ctrl+p commands · ctrl+l sessions · ctrl+o details")
 	}
 	if lipgloss.Width(left)+lipgloss.Width(right)+2 > m.contentWidth() {
 		return " " + left
