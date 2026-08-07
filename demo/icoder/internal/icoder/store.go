@@ -1,6 +1,7 @@
 package icoder
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -16,7 +17,8 @@ import (
 )
 
 type Store struct {
-	db *sql.DB
+	db     *sql.DB
+	events *SQLiteEventStore
 }
 
 type SessionSnapshot struct {
@@ -43,12 +45,13 @@ type TaskState struct {
 }
 
 func OpenStore(path string) (*Store, error) {
-	db, err := sql.Open("sqlite3", "file:"+path+"?_busy_timeout=10000&_foreign_keys=on")
+	db, err := sql.Open("sqlite3", "file:"+path+"?_busy_timeout=10000&_foreign_keys=on&_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	store := &Store{db: db}
+	store.events = NewSQLiteEventStore(db)
 	if err := store.migrate(); err != nil {
 		closeErr := db.Close()
 		return nil, errors.Join(err, closeErr)
@@ -96,6 +99,44 @@ func (s *Store) migrate() error {
             PRIMARY KEY (session_id, sequence),
             FOREIGN KEY (session_id) REFERENCES icoder_sessions(id)
         )`,
+		`CREATE TABLE IF NOT EXISTS event_streams (
+			tenant_key TEXT NOT NULL,
+			stream_key TEXT NOT NULL,
+			last_sequence INTEGER NOT NULL DEFAULT 0,
+			retention_floor INTEGER NOT NULL DEFAULT 1,
+			PRIMARY KEY (tenant_key, stream_key)
+		)`,
+		`CREATE TABLE IF NOT EXISTS event_records (
+			event_id TEXT PRIMARY KEY,
+			tenant_key TEXT NOT NULL,
+			stream_key TEXT NOT NULL,
+			sequence INTEGER NOT NULL,
+			event_type TEXT NOT NULL,
+			schema_version INTEGER NOT NULL,
+			reliability TEXT NOT NULL,
+			aggregate_type TEXT NOT NULL,
+			aggregate_key TEXT NOT NULL,
+			aggregate_revision INTEGER NOT NULL,
+			correlation_id TEXT NOT NULL,
+			causation_id TEXT NOT NULL,
+			occurred_at INTEGER NOT NULL,
+			persisted_at INTEGER NOT NULL,
+			payload BLOB NOT NULL,
+			outbox_state TEXT NOT NULL,
+			attempts INTEGER NOT NULL DEFAULT 0,
+			next_attempt INTEGER NOT NULL,
+			lease_owner TEXT NOT NULL DEFAULT '',
+			lease_token TEXT NOT NULL DEFAULT '',
+			lease_fence INTEGER NOT NULL DEFAULT 0,
+			lease_expires INTEGER NOT NULL DEFAULT 0,
+			delivered_at INTEGER NOT NULL DEFAULT 0,
+			dead_at INTEGER NOT NULL DEFAULT 0,
+			last_error TEXT NOT NULL DEFAULT '',
+			UNIQUE (tenant_key, stream_key, sequence),
+			FOREIGN KEY (tenant_key, stream_key) REFERENCES event_streams(tenant_key, stream_key)
+		)`,
+		`CREATE INDEX IF NOT EXISTS event_records_claim
+			ON event_records(tenant_key, outbox_state, next_attempt, lease_expires, persisted_at, event_id)`,
 		`CREATE TABLE IF NOT EXISTS icoder_context_plans (
 			tenant_key TEXT NOT NULL,
 			plan_key TEXT NOT NULL,
@@ -133,7 +174,55 @@ func (s *Store) migrate() error {
 	if err := s.ensureMessageTurnRevision(); err != nil {
 		return err
 	}
+	if err := s.migrateLegacyEvents(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *Store) migrateLegacyEvents() error {
+	rows, err := s.db.Query(`SELECT session_id, sequence, event_id, event_type, payload, occurred_at FROM icoder_events ORDER BY session_id, sequence`)
+	if err != nil {
+		return err
+	}
+	type legacyEvent struct {
+		session, eventID, eventType, payload, occurredAt string
+		sequence                                         uint64
+	}
+	var values []legacyEvent
+	for rows.Next() {
+		var value legacyEvent
+		if err := rows.Scan(&value.session, &value.sequence, &value.eventID, &value.eventType, &value.payload, &value.occurredAt); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		values = append(values, value)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, value := range values {
+		occurredAt, err := time.Parse(time.RFC3339Nano, value.occurredAt)
+		if err != nil {
+			return fmt.Errorf("migrate legacy event %q: %w", value.eventID, err)
+		}
+		stream := "session/" + value.session
+		if _, err := tx.Exec(`INSERT INTO event_streams(tenant_key, stream_key, last_sequence) VALUES(?, ?, ?) ON CONFLICT(tenant_key, stream_key) DO UPDATE SET last_sequence = MAX(last_sequence, excluded.last_sequence)`, "local", stream, value.sequence); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO event_records(event_id, tenant_key, stream_key, sequence, event_type, schema_version, reliability, aggregate_type, aggregate_key, aggregate_revision, correlation_id, causation_id, occurred_at, persisted_at, payload, outbox_state, next_attempt, delivered_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?) ON CONFLICT(event_id) DO NOTHING`, value.eventID, "local", stream, value.sequence, value.eventType, 1, event.ReliabilityTerminal, "session", value.session, value.sequence, occurredAt.UnixNano(), occurredAt.UnixNano(), []byte(value.payload), event.OutboxDelivered, occurredAt.UnixNano(), occurredAt.UnixNano()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ensureMessageTurnRevision() error {
@@ -248,7 +337,7 @@ func (s *Store) Load(ctx context.Context, sessionID string) (snapshot SessionSna
 	return snapshot, messages, rows.Err()
 }
 
-func (s *Store) CommitTurn(ctx context.Context, snapshot SessionSnapshot, requestID, inputDigest string, user agent.Message, result agent.RunResult) (resultErr error) {
+func (s *Store) CommitTurn(ctx context.Context, snapshot SessionSnapshot, requestID, runID, inputDigest string, user agent.Message, result agent.RunResult) (resultErr error) {
 	resultPayload, err := marshalString(result)
 	if err != nil {
 		return err
@@ -304,7 +393,11 @@ func (s *Store) CommitTurn(ctx context.Context, snapshot SessionSnapshot, reques
 	if err != nil {
 		return err
 	}
-	if err := appendEventTx(ctx, tx, snapshot.ID, requestID+":terminal", "agent.run.completed", payload); err != nil {
+	envelope, err := newSessionEvent(snapshot.ID, requestID+":completed", "agent.run.completed", event.ReliabilityTerminal, snapshot.Revision+1, runID, runID+":started", []byte(payload))
+	if err != nil {
+		return err
+	}
+	if _, err := s.events.AppendBatchTx(ctx, tx, event.AppendBatchCommand{Events: []event.AppendCommand{{Envelope: envelope}}}); err != nil {
 		return err
 	}
 	summary := summarizeRun(result.Messages)
@@ -327,24 +420,33 @@ func (s *Store) AppendRunEvent(ctx context.Context, sessionID, eventID, eventTyp
 	if err != nil {
 		return err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	existing, found, err := selectStoredEvent(ctx, s.db, eventID)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	if err := appendEventTx(ctx, tx, sessionID, eventID, eventType, data); err != nil {
+	if found {
+		if existing.TenantKey == "local" && existing.StreamKey == "session/"+sessionID && existing.Type == eventType && bytes.Equal(existing.Payload, []byte(data)) {
+			return nil
+		}
+		return fmt.Errorf("%w: event id %q has different application input", event.ErrIdempotencyConflict, eventID)
+	}
+	reliability := event.ReliabilityDomain
+	if eventType == "agent.run.failed" || eventType == "agent.run.canceled" || eventType == "agent.run.completed" {
+		reliability = event.ReliabilityTerminal
+	}
+	envelope, err := newSessionEvent(sessionID, eventID, eventType, reliability, 0, eventID, "", []byte(data))
+	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	_, err = s.events.Append(ctx, event.AppendCommand{Envelope: envelope})
+	return err
 }
 
-func appendEventTx(ctx context.Context, tx *sql.Tx, sessionID, eventID, eventType, payload string) error {
-	var sequence uint64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence) + 1, 1) FROM icoder_events WHERE session_id = ?`, sessionID).Scan(&sequence); err != nil {
-		return err
+func newSessionEvent(sessionID, eventID, eventType string, reliability event.Reliability, revision uint64, correlationID, causationID string, payload []byte) (event.Envelope, error) {
+	if !json.Valid(payload) {
+		return event.Envelope{}, fmt.Errorf("event payload must be valid JSON")
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO icoder_events(session_id, sequence, event_id, event_type, payload, occurred_at) VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(event_id) DO NOTHING`, sessionID, sequence, eventID, eventType, payload, time.Now().UTC().Format(time.RFC3339Nano))
-	return err
+	return event.Envelope{TenantKey: "local", EventID: eventID, StreamKey: "session/" + sessionID, Type: eventType, SchemaVersion: 1, Reliability: reliability, AggregateType: "session", AggregateKey: sessionID, AggregateRevision: revision, CorrelationID: correlationID, CausationID: causationID, OccurredAt: time.Now().UTC(), Payload: append([]byte(nil), payload...)}, nil
 }
 
 func (s *Store) LoadTaskState(ctx context.Context, sessionID string) (*TaskState, error) {
@@ -367,29 +469,21 @@ func (s *Store) ReplayEvents(ctx context.Context, sessionID string, after uint64
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT sequence, event_id, event_type, payload, occurred_at FROM icoder_events WHERE session_id = ? AND sequence > ? ORDER BY sequence LIMIT ?`, sessionID, after, limit)
+	cursor := event.Cursor{TenantKey: "local", StreamKey: "session/" + sessionID}
+	if after > 0 {
+		if err := s.db.QueryRowContext(ctx, `SELECT event_id FROM event_records WHERE tenant_key = ? AND stream_key = ? AND sequence = ?`, cursor.TenantKey, cursor.StreamKey, after).Scan(&cursor.EventID); err != nil {
+			return nil, err
+		}
+		cursor.Sequence = after
+	}
+	replayed, err := s.events.Replay(ctx, event.ReplayQuery{Cursor: cursor, Limit: limit})
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		resultErr = errors.Join(resultErr, rows.Close())
-	}()
-	for rows.Next() {
-		var envelope event.Envelope
-		var occurredAt string
-		envelope.TenantKey, envelope.StreamKey, envelope.AggregateType, envelope.AggregateKey = "local", "session/"+sessionID, "session", sessionID
-		envelope.SchemaVersion, envelope.Reliability = 1, event.ReliabilityTerminal
-		if err := rows.Scan(&envelope.Sequence, &envelope.EventID, &envelope.Type, &envelope.Payload, &occurredAt); err != nil {
-			return nil, err
-		}
-		envelope.AggregateRevision = envelope.Sequence
-		envelope.OccurredAt, err = time.Parse(time.RFC3339Nano, occurredAt)
-		if err != nil {
-			return nil, err
-		}
-		events = append(events, envelope)
+	if replayed.Reconcile {
+		return nil, fmt.Errorf("event replay requires reconciliation")
 	}
-	return events, rows.Err()
+	return replayed.Events, nil
 }
 
 func (s *Store) ListSessions(ctx context.Context) (sessions []SessionInfo, resultErr error) {
@@ -419,6 +513,12 @@ func (s *Store) ClearSession(ctx context.Context, sessionID string) (resultErr e
 			resultErr = errors.Join(resultErr, rollbackErr)
 		}
 	}()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM event_records WHERE tenant_key = ? AND stream_key = ?`, "local", "session/"+sessionID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM event_streams WHERE tenant_key = ? AND stream_key = ?`, "local", "session/"+sessionID); err != nil {
+		return err
+	}
 	for _, statement := range []string{
 		`DELETE FROM icoder_task_state WHERE session_id = ?`,
 		`DELETE FROM icoder_session_context WHERE session_id = ?`,

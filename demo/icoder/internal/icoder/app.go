@@ -10,6 +10,7 @@ import (
 
 	"github.com/iceymoss/agent-runtime-go"
 	agentcontext "github.com/iceymoss/agent-runtime-go/context"
+	"github.com/iceymoss/agent-runtime-go/event"
 	"github.com/iceymoss/agent-runtime-go/mcp"
 	"github.com/iceymoss/agent-runtime-go/prompt"
 	"github.com/iceymoss/agent-runtime-go/provider"
@@ -229,8 +230,13 @@ func (a *App) RunWithApproval(ctx context.Context, instruction string, observe f
 		return nil, err
 	}
 	requestID := digest([]byte(sessionID + "\x00" + fmt.Sprint(snapshot.Revision) + "\x00" + instruction))
-	ctx = withRunContext(ctx, requestID, sessionID, approve, func(eventCtx context.Context, suffix, eventType string, payload any) error {
-		return a.store.AppendRunEvent(eventCtx, sessionID, requestID+":"+suffix, eventType, payload)
+	runNonce, err := NewSessionID()
+	if err != nil {
+		return nil, err
+	}
+	runID := requestID + ":attempt:" + runNonce
+	ctx = withRunContext(ctx, runID, sessionID, approve, func(eventCtx context.Context, suffix, eventType string, payload any) error {
+		return a.store.AppendRunEvent(eventCtx, sessionID, runID+":"+suffix, eventType, payload)
 	})
 	normalized, err := agentcontext.NormalizeHistory(agentcontext.NormalizeRequest{Messages: history, Policy: agentcontext.RepairReject})
 	if err != nil {
@@ -287,7 +293,7 @@ func (a *App) RunWithApproval(ctx context.Context, instruction string, observe f
 	if err != nil {
 		return nil, err
 	}
-	if err := a.store.AppendRunEvent(ctx, sessionID, requestID+":started", "agent.run.started", map[string]any{"revision": snapshot.Revision, "input_digest": digest([]byte(instruction))}); err != nil {
+	if err := a.store.AppendRunEvent(ctx, sessionID, runID+":started", "agent.run.started", map[string]any{"revision": snapshot.Revision, "request_id": requestID, "input_digest": digest([]byte(instruction))}); err != nil {
 		return nil, err
 	}
 	emitter := agent.NewObservationEmitter(64, observe)
@@ -304,12 +310,12 @@ func (a *App) RunWithApproval(ctx context.Context, instruction string, observe f
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer cancel()
-		if eventErr := a.store.AppendRunEvent(cleanupCtx, sessionID, requestID+":terminal", eventType, payload); eventErr != nil {
+		if eventErr := a.store.AppendRunEvent(cleanupCtx, sessionID, runID+":terminal", eventType, payload); eventErr != nil {
 			return result, errorsJoin(runErr, eventErr)
 		}
 		return result, runErr
 	}
-	if err := a.store.CommitTurn(ctx, snapshot, requestID, digest([]byte(instruction)), agent.NewUserMessage(instruction), *result); err != nil {
+	if err := a.store.CommitTurn(ctx, snapshot, requestID, runID, digest([]byte(instruction)), agent.NewUserMessage(instruction), *result); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -370,6 +376,21 @@ func (a *App) Events(ctx context.Context, after uint64) ([]string, error) {
 		result[i] = fmt.Sprintf("%d %s %s", envelope.Sequence, envelope.Type, envelope.Payload)
 	}
 	return result, nil
+}
+
+func (a *App) DispatchOutbox(ctx context.Context, publisher event.Publisher, limit int) (event.DispatchStats, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	owner, err := NewSessionID()
+	if err != nil {
+		return event.DispatchStats{}, err
+	}
+	dispatcher, err := event.NewDispatcher(a.store.events, publisher, event.DispatcherConfig{TenantKey: "local", Owner: "icoder-" + owner, BatchSize: limit, LeaseDuration: time.Minute, BaseBackoff: time.Second, MaxBackoff: time.Minute, MaxAttempts: 5})
+	if err != nil {
+		return event.DispatchStats{}, err
+	}
+	return dispatcher.RunOnce(ctx)
 }
 
 func (a *App) SessionID() string { return a.state.Get() }

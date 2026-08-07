@@ -145,7 +145,7 @@
 
 - [x] 持久化 run started/completed/failed/canceled。
 - [x] 持久化 tool call/result、approval 和 usage facts。
-- 使用 event/outbox，而不是依赖 lossy Observation。
+- [x] 使用 SQLite event/outbox 和 runtime Dispatcher，而不是依赖 lossy Observation。
 - [x] 增加 retryable model error 的 backoff、jitter 和 Retry-After。
 - [x] 冻结 run-scoped tenant/session/revision/runtime generation。
 - 接入高级 tool executor 和 effect ledger，表达 unknown effect。

@@ -4,8 +4,10 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/iceymoss/agent-runtime-go"
+	"github.com/iceymoss/agent-runtime-go/event"
 )
 
 func TestStoreCommitTurnAndIdempotency(t *testing.T) {
@@ -24,10 +26,10 @@ func TestStoreCommitTurnAndIdempotency(t *testing.T) {
 		t.Fatalf("Load() = %#v, %d, %v", snapshot, len(history), err)
 	}
 	result := agent.RunResult{Messages: []agent.Message{agent.NewAssistantMessage("answer")}, Text: "answer", Outcome: agent.OutcomeCompleted, StopReason: agent.StopReasonComplete, Usage: agent.Usage{PromptTokens: 2, CompletionTokens: 1, TotalTokens: 3}}
-	if err := store.CommitTurn(ctx, snapshot, "request-1", "input-1", agent.NewUserMessage("question"), result); err != nil {
+	if err := store.CommitTurn(ctx, snapshot, "request-1", "run-1", "input-1", agent.NewUserMessage("question"), result); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CommitTurn(ctx, snapshot, "request-1", "input-1", agent.NewUserMessage("question"), result); err != nil {
+	if err := store.CommitTurn(ctx, snapshot, "request-1", "run-1", "input-1", agent.NewUserMessage("question"), result); err != nil {
 		t.Fatalf("idempotent CommitTurn() error = %v", err)
 	}
 	updated, history, err := store.Load(ctx, "session")
@@ -56,10 +58,10 @@ func TestStoreRejectsStaleRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := agent.RunResult{Messages: []agent.Message{agent.NewAssistantMessage("one")}, Outcome: agent.OutcomeCompleted, StopReason: agent.StopReasonComplete}
-	if err := store.CommitTurn(ctx, snapshot, "one", "one", agent.NewUserMessage("one"), result); err != nil {
+	if err := store.CommitTurn(ctx, snapshot, "one", "run-one", "one", agent.NewUserMessage("one"), result); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CommitTurn(ctx, snapshot, "two", "two", agent.NewUserMessage("two"), result); err == nil {
+	if err := store.CommitTurn(ctx, snapshot, "two", "run-two", "two", agent.NewUserMessage("two"), result); err == nil {
 		t.Fatal("CommitTurn() accepted stale revision")
 	}
 }
@@ -80,7 +82,7 @@ func TestStoreListsAndClearsSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := agent.RunResult{Messages: []agent.Message{agent.NewAssistantMessage("answer")}, Outcome: agent.OutcomeCompleted, StopReason: agent.StopReasonComplete}
-	if err := store.CommitTurn(ctx, snapshot, "request", "input", agent.NewUserMessage("question"), result); err != nil {
+	if err := store.CommitTurn(ctx, snapshot, "request", "run", "input", agent.NewUserMessage("question"), result); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := store.Load(ctx, "beta"); err != nil {
@@ -120,7 +122,7 @@ func TestStoreHistoryIsIsolatedBySession(t *testing.T) {
 			t.Fatal(err)
 		}
 		result := agent.RunResult{Messages: []agent.Message{agent.NewAssistantMessage("answer-" + session)}, Outcome: agent.OutcomeCompleted, StopReason: agent.StopReasonComplete}
-		if err := store.CommitTurn(ctx, snapshot, "request-"+session, "input-"+session, agent.NewUserMessage("question-"+session), result); err != nil {
+		if err := store.CommitTurn(ctx, snapshot, "request-"+session, "run-"+session, "input-"+session, agent.NewUserMessage("question-"+session), result); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -153,7 +155,7 @@ func TestStorePersistsTaskStateWithTurn(t *testing.T) {
 		{Role: agent.RoleAssistant, Parts: []agent.ContentPart{{Type: agent.PartToolCall, ToolCall: &write}}},
 		agent.NewToolMessage(agent.ToolResult{ToolCallID: "write", Name: "write_file", Content: `{}`}),
 	}}
-	if err := store.CommitTurn(ctx, snapshot, "request", "input", agent.NewUserMessage("fix main"), result); err != nil {
+	if err := store.CommitTurn(ctx, snapshot, "request", "run", "input", agent.NewUserMessage("fix main"), result); err != nil {
 		t.Fatal(err)
 	}
 	state, err := store.LoadTaskState(ctx, "task-state")
@@ -191,5 +193,64 @@ func TestStoreAppendRunEventIsIdempotentAndOrdered(t *testing.T) {
 	events, err := store.ReplayEvents(ctx, "events", 0, 10)
 	if err != nil || len(events) != 2 || events[0].Sequence != 1 || events[1].Sequence != 2 || events[1].Type != "agent.run.failed" {
 		t.Fatalf("ReplayEvents() = %#v, %v", events, err)
+	}
+}
+
+func TestStoreCommitTurnCreatesPendingOutboxAtomically(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "icoder.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	snapshot, _, err := store.Load(ctx, "outbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := agent.RunResult{Messages: []agent.Message{agent.NewAssistantMessage("answer")}, Outcome: agent.OutcomeCompleted}
+	if err := store.CommitTurn(ctx, snapshot, "request", "run", "input", agent.NewUserMessage("question"), result); err != nil {
+		t.Fatal(err)
+	}
+	var state event.OutboxState
+	if err := store.db.QueryRow(`SELECT outbox_state FROM event_records WHERE event_id = 'request:completed'`).Scan(&state); err != nil || state != event.OutboxPending {
+		t.Fatalf("completed outbox state = %q, %v", state, err)
+	}
+	if err := store.CommitTurn(ctx, snapshot, "stale", "stale-run", "input", agent.NewUserMessage("question"), result); err == nil {
+		t.Fatal("CommitTurn() accepted stale snapshot")
+	}
+	var count int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM event_records WHERE event_id = 'stale:completed'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("rolled back outbox count = %d, %v", count, err)
+	}
+}
+
+func TestStoreMigratesLegacyEventsAsDelivered(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, _, err := store.Load(ctx, "legacy"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`INSERT INTO icoder_events(session_id, sequence, event_id, event_type, payload, occurred_at) VALUES(?, ?, ?, ?, ?, ?)`, "legacy", 1, "legacy:event", "agent.run.completed", `{}`, time.Date(2026, 8, 7, 1, 2, 3, 0, time.UTC).Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var state event.OutboxState
+	if err := store.db.QueryRow(`SELECT outbox_state FROM event_records WHERE event_id = 'legacy:event'`).Scan(&state); err != nil || state != event.OutboxDelivered {
+		t.Fatalf("legacy outbox state = %q, %v", state, err)
+	}
+	claimed, err := store.events.Claim(ctx, event.ClaimCommand{TenantKey: "local", Owner: "worker", Limit: 10, LeaseDuration: time.Minute})
+	if err != nil || len(claimed) != 0 {
+		t.Fatalf("Claim() legacy events = %#v, %v", claimed, err)
 	}
 }

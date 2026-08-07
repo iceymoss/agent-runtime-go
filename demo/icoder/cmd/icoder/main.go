@@ -15,6 +15,7 @@ import (
 	icodereval "github.com/iceymoss/agent-runtime-go/demo/icoder/internal/eval"
 	"github.com/iceymoss/agent-runtime-go/demo/icoder/internal/icoder"
 	"github.com/iceymoss/agent-runtime-go/demo/icoder/internal/ui"
+	"github.com/iceymoss/agent-runtime-go/event"
 	"github.com/spf13/cobra"
 )
 
@@ -67,11 +68,35 @@ func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	root.AddCommand(newEvalCommand(opts, stdout))
 	root.AddCommand(newSessionCommand(opts, stdout, stderr))
 	root.AddCommand(newEventsCommand(opts, stdout, stderr))
+	root.AddCommand(newOutboxCommand(opts, stdout, stderr))
 	root.AddCommand(newToolsCommand(opts, stdout, stderr))
 	root.AddCommand(newConfigCommand(opts, stdout))
 	root.AddCommand(&cobra.Command{Use: "version", Short: "Print version", Args: cobra.NoArgs, Run: func(*cobra.Command, []string) { fmt.Fprintln(stdout, "icoder "+version) }})
 	root.AddCommand(newCompletionCommand(root))
 	return root
+}
+
+type writerPublisher struct{ output io.Writer }
+
+func (p writerPublisher) Publish(_ context.Context, envelope event.Envelope) error {
+	return json.NewEncoder(p.output).Encode(envelope)
+}
+
+func newOutboxCommand(opts *options, stdout, stderr io.Writer) *cobra.Command {
+	parent := &cobra.Command{Use: "outbox", Short: "Manage persisted event delivery"}
+	var limit int
+	dispatch := &cobra.Command{Use: "dispatch", Short: "Publish and acknowledge one bounded outbox batch as JSON Lines", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		return withApp(cmd.Context(), opts.config, stderr, func(app *icoder.App) error {
+			stats, err := app.DispatchOutbox(cmd.Context(), writerPublisher{output: stdout}, limit)
+			if err != nil {
+				return err
+			}
+			return writeJSON(stdout, map[string]any{"dispatch": stats})
+		})
+	}}
+	dispatch.Flags().IntVar(&limit, "limit", 100, "maximum events to claim")
+	parent.AddCommand(dispatch)
+	return parent
 }
 
 func newEvalCommand(opts *options, stdout io.Writer) *cobra.Command {

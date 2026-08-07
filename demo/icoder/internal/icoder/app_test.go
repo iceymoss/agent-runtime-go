@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/iceymoss/agent-runtime-go"
+	"github.com/iceymoss/agent-runtime-go/event"
 )
 
 // wireChatRequest decodes the provider requests captured by the fixture server.
@@ -203,5 +204,85 @@ func TestAppPersistsFailedRunTerminalEvent(t *testing.T) {
 	events, err := app.store.ReplayEvents(context.Background(), "failed-run", 0, 10)
 	if err != nil || len(events) != 2 || events[0].Type != "agent.run.started" || events[1].Type != "agent.run.failed" {
 		t.Fatalf("ReplayEvents() = %#v, %v", events, err)
+	}
+}
+
+func TestAppCanSucceedAfterSamePromptFailedAttempt(t *testing.T) {
+	var fail bool = true
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		if fail {
+			response.WriteHeader(http.StatusBadRequest)
+			_, _ = response.Write([]byte(`{"error":{"message":"rejected"}}`))
+			return
+		}
+		writeSSEResponse(t, response,
+			`{"model":"fixture","choices":[{"delta":{"content":"recovered"},"finish_reason":null}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+			`{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+			`[DONE]`,
+		)
+	}))
+	defer server.Close()
+	app, err := NewApp(context.Background(), Config{APIKey: "fixture-key", BaseURL: server.URL, Model: "fixture", Workspace: t.TempDir(), Database: filepath.Join(t.TempDir(), "icoder.db"), SessionID: "retry-run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = app.Close(context.Background()) }()
+	if _, err := app.Run(context.Background(), "same prompt", nil); err == nil {
+		t.Fatal("first Run() returned no error")
+	}
+	fail = false
+	result, err := app.Run(context.Background(), "same prompt", nil)
+	if err != nil || result.Text != "recovered" {
+		t.Fatalf("second Run() = %#v, %v", result, err)
+	}
+	events, err := app.store.ReplayEvents(context.Background(), "retry-run", 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := 0
+	for _, item := range events {
+		if item.Type == "agent.run.failed" || item.Type == "agent.run.completed" {
+			terminal++
+		}
+	}
+	if terminal != 2 {
+		t.Fatalf("terminal events = %d: %#v", terminal, events)
+	}
+}
+
+type recordingPublisher struct{ events []event.Envelope }
+
+func (p *recordingPublisher) Publish(_ context.Context, envelope event.Envelope) error {
+	p.events = append(p.events, envelope)
+	return nil
+}
+
+func TestAppDispatchOutboxDeliversPendingEvents(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		writeSSEResponse(t, response,
+			`{"model":"fixture","choices":[{"delta":{"content":"answer"},"finish_reason":null}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+			`{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+			`[DONE]`,
+		)
+	}))
+	defer server.Close()
+	app, err := NewApp(context.Background(), Config{APIKey: "fixture", BaseURL: server.URL, Model: "fixture", Workspace: t.TempDir(), Database: filepath.Join(t.TempDir(), "icoder.db"), SessionID: "dispatch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = app.Close(context.Background()) }()
+	if _, err := app.Run(context.Background(), "answer", nil); err != nil {
+		t.Fatal(err)
+	}
+	publisher := &recordingPublisher{}
+	stats, err := app.DispatchOutbox(context.Background(), publisher, 10)
+	if err != nil || stats.Claimed != 2 || stats.Delivered != 2 || len(publisher.events) != 2 {
+		t.Fatalf("DispatchOutbox() = %#v, events = %#v, error = %v", stats, publisher.events, err)
+	}
+	stats, err = app.DispatchOutbox(context.Background(), publisher, 10)
+	if err != nil || stats.Claimed != 0 || len(publisher.events) != 2 {
+		t.Fatalf("second DispatchOutbox() = %#v, events = %#v, error = %v", stats, publisher.events, err)
 	}
 }

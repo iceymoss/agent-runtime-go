@@ -99,6 +99,7 @@ icoder session list            列出会话
 icoder session history         查看当前会话历史
 icoder session clear           清空当前会话
 icoder events                  回放当前会话 terminal events
+icoder outbox dispatch         将一批可靠事件输出为 JSON Lines 并确认投递
 icoder tools                   列出工具
 icoder config show             显示已解析的非敏感配置
 icoder config validate         验证配置
@@ -157,6 +158,12 @@ icoder version                 显示版本
 ```
 
 MCP 工具由远端服务定义且默认按未知网络副作用逐次询问审批。连接器仍只应指向经过批准的 endpoint。`delegate_review` 使用独立预算和只读工具集执行真实模型 review。
+
+`outbox dispatch` 使用 runtime `event.Dispatcher` 的 claim/lease/fence/ack 语义。发布目标是 stdout，适合作为外部日志采集器或消息投递进程的参考：
+
+```bash
+./icoder outbox dispatch --limit 100 > events.jsonl
+```
 
 ## 验证
 
