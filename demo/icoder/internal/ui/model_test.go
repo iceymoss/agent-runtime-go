@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/iceymoss/agent-runtime-go"
 	"github.com/iceymoss/agent-runtime-go/demo/icoder/internal/icoder"
 )
@@ -110,5 +111,30 @@ func TestSessionPickerNavigation(t *testing.T) {
 	model = updated.(Model)
 	if model.sessionPicker {
 		t.Fatal("session picker remained open")
+	}
+}
+
+func TestRenderItemUsesCompactConversationHierarchy(t *testing.T) {
+	model := Model{}
+	user := model.renderItem(transcriptItem{kind: itemUser, content: "Add a Python example"})
+	assistant := model.renderItem(transcriptItem{kind: itemAssistant, content: "I will add it."})
+	tool := model.renderItem(transcriptItem{kind: itemTool, state: stateSuccess, title: "write_file examples/start.py"})
+	if !strings.Contains(user, "You") || !strings.Contains(user, "Add a Python example") || !strings.Contains(assistant, "iCoder\nI will add it.") || !strings.Contains(tool, "+ write_file examples/start.py") {
+		t.Fatalf("user=%q assistant=%q tool=%q", user, assistant, tool)
+	}
+}
+
+func TestTruncateLineKeepsRightmostWorkspacePath(t *testing.T) {
+	value := truncateLine("/home/jeff/projects/agent-runtime-go/demo/icoder", 24)
+	if !strings.HasPrefix(value, "...") || !strings.HasSuffix(value, "demo/icoder") || lipgloss.Width(value) > 24 {
+		t.Fatalf("truncateLine() = %q width=%d", value, lipgloss.Width(value))
+	}
+}
+
+func TestNarrowStatusHidesShortcutHints(t *testing.T) {
+	model := Model{width: 24, latestStatus: "ready"}
+	status := model.statusView()
+	if !strings.Contains(status, "ready") || strings.Contains(status, "commands") || lipgloss.Width(status) > model.contentWidth() {
+		t.Fatalf("status = %q width=%d", status, lipgloss.Width(status))
 	}
 }

@@ -18,13 +18,17 @@ import (
 )
 
 var (
-	accent     = lipgloss.Color("#7C6AF2")
-	muted      = lipgloss.Color("#7B8496")
-	userStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#58C7B0")).Bold(true)
-	agentStyle = lipgloss.NewStyle().Foreground(accent).Bold(true)
-	toolStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#E5A84B"))
-	errorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B"))
-	success    = lipgloss.NewStyle().Foreground(lipgloss.Color("#58C7B0"))
+	accent       = lipgloss.Color("#8B8CF8")
+	accentSoft   = lipgloss.Color("#686AA8")
+	muted        = lipgloss.Color("#73788A")
+	subtle       = lipgloss.Color("#4B5060")
+	userStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#D6D7FF")).Bold(true)
+	agentStyle   = lipgloss.NewStyle().Foreground(accent).Bold(true)
+	toolStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#A6ADC8"))
+	errorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#F38BA8"))
+	success      = lipgloss.NewStyle().Foreground(lipgloss.Color("#94E2D5"))
+	warningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F9E2AF"))
+	dimStyle     = lipgloss.NewStyle().Foreground(muted)
 )
 
 type itemKind string
@@ -331,25 +335,66 @@ func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
-	header := lipgloss.NewStyle().Bold(true).Foreground(accent).Render(" iCoder")
-	meta := lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("  %s  |  %s", m.app.SessionID(), m.app.WorkingDirectory()))
+	header := m.headerView()
 	body := m.viewport.View()
-	separator := strings.Repeat("-", max(1, m.width))
 	if m.sessionPicker {
-		return header + meta + "\n" + separator + "\n" + m.sessionPickerView() + "\n" + separator + "\n" + lipgloss.NewStyle().Foreground(muted).Render("Up/Down select | Enter open | n new | Esc close")
+		return header + "\n\n" + m.sessionPickerView() + "\n\n" + dimStyle.Render("  up/down select   enter open   n new   esc close")
 	}
 	if m.pending != nil {
-		return header + meta + "\n" + separator + "\n" + body + "\n" + m.approvalView() + "\n" + separator + "\n" + m.statusView()
+		return header + "\n\n" + body + "\n\n" + m.approvalView() + "\n" + m.statusView()
 	}
-	composer := m.input.View()
+	composer := m.composerView()
 	if m.running {
-		composer = lipgloss.NewStyle().Foreground(muted).Render("  Task is running. Input unlocks when this run finishes.")
+		composer = m.runningView()
 	}
-	view := header + meta + "\n" + separator + "\n" + body + "\n" + separator + "\n" + composer
+	view := header + "\n\n" + body + "\n\n" + composer
 	if suggestions := m.commandSuggestions(); len(suggestions) > 0 {
 		view += "\n" + m.suggestionView(suggestions)
 	}
 	return view + "\n" + m.statusView()
+}
+
+func (m Model) contentWidth() int {
+	if m.width <= 0 {
+		return 76
+	}
+	return max(20, m.width-2)
+}
+
+func (m Model) headerView() string {
+	brand := agentStyle.Render("icoder")
+	if m.app == nil {
+		return " " + brand
+	}
+	sessionWidth := max(4, min(20, m.contentWidth()-lipgloss.Width(brand)-4))
+	session := dimStyle.Render(truncateLine(m.app.SessionID(), sessionWidth))
+	left := " " + brand + "  " + session
+	pathWidth := m.contentWidth() - lipgloss.Width(left) - 2
+	if pathWidth < 12 {
+		return left
+	}
+	right := dimStyle.Render(truncateLine(m.app.WorkingDirectory(), pathWidth))
+	gap := strings.Repeat(" ", max(1, m.contentWidth()-lipgloss.Width(left)-lipgloss.Width(right)))
+	return left + gap + right
+}
+
+func (m Model) composerView() string {
+	return lipgloss.NewStyle().
+		Width(max(16, m.contentWidth()-4)).
+		Padding(0, 1).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(accentSoft).
+		Render(m.input.View())
+}
+
+func (m Model) runningView() string {
+	return lipgloss.NewStyle().
+		Width(max(16, m.contentWidth()-4)).
+		Padding(0, 1).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(subtle).
+		Foreground(muted).
+		Render(m.spinner.View() + " Working on this task. Input unlocks when the run finishes.")
 }
 
 func (m *Model) applyObservation(observation agent.Observation) {
@@ -444,7 +489,7 @@ func (m *Model) syncViewport(forceBottom bool) {
 		if content != "" {
 			content += "\n\n"
 		}
-		content += agentStyle.Render("assistant") + "\n" + m.streamed
+		content += agentStyle.Render("iCoder") + "\n" + m.streamed
 	}
 	m.viewport.SetContent(content)
 	if forceBottom || m.follow {
@@ -461,25 +506,25 @@ func (m Model) renderItems() string {
 func (m Model) renderItem(item transcriptItem) string {
 	switch item.kind {
 	case itemUser:
-		return userStyle.Render("you") + "\n" + item.content
+		return lipgloss.NewStyle().BorderLeft(true).BorderStyle(lipgloss.ThickBorder()).BorderForeground(accentSoft).PaddingLeft(1).Render(userStyle.Render("You") + "\n" + item.content)
 	case itemAssistant:
-		return agentStyle.Render("assistant") + "\n" + item.content
+		return agentStyle.Render("iCoder") + "\n" + item.content
 	case itemTool:
-		icon, style := "*", toolStyle
+		icon, style := "~", warningStyle
 		if item.state == stateSuccess {
 			icon, style = "+", success
 		} else if item.state == stateError {
-			icon, style = "!", errorStyle
+			icon, style = "x", errorStyle
 		}
-		value := style.Render(icon + " " + item.title)
+		value := "  " + style.Render(icon) + " " + toolStyle.Render(item.title)
 		if m.details && item.detail != "" {
-			value += "\n" + lipgloss.NewStyle().Foreground(muted).Render(item.detail)
+			value += "\n" + lipgloss.NewStyle().MarginLeft(4).BorderLeft(true).BorderStyle(lipgloss.NormalBorder()).BorderForeground(subtle).PaddingLeft(1).Foreground(muted).Render(item.detail)
 		}
 		return value
 	default:
-		style := lipgloss.NewStyle().Foreground(muted)
+		style := lipgloss.NewStyle().Foreground(muted).BorderLeft(true).BorderStyle(lipgloss.NormalBorder()).BorderForeground(subtle).PaddingLeft(1)
 		if item.state == stateError {
-			style = errorStyle
+			style = style.Foreground(errorStyle.GetForeground()).BorderForeground(errorStyle.GetForeground())
 		}
 		title := item.title
 		if title != "" {
@@ -520,31 +565,42 @@ func (m *Model) cancelRun() {
 
 func (m Model) approvalView() string {
 	p := m.pending.prompt
-	expires := ""
+	meta := toolStyle.Render(p.ToolName) + "  " + dimStyle.Render(p.Action)
+	resource := "resource  " + p.Resource
 	if !p.ExpiresAt.IsZero() {
-		expires = "\nExpires: " + p.ExpiresAt.Local().Format("15:04:05")
+		resource += "\nexpires   " + p.ExpiresAt.Local().Format("15:04:05")
 	}
-	actions := success.Render("[y/1/Enter] allow once") + "  " + errorStyle.Render("[n/2/Esc] reject") + "  [Ctrl+C] cancel run"
+	actions := success.Render("y / enter  allow once") + "    " + errorStyle.Render("n / esc  reject") + "    " + dimStyle.Render("ctrl+c  cancel")
 	if m.pending.submitted {
-		actions = m.spinner.View() + " Checking approval status...  [Ctrl+C] cancel run"
+		actions = warningStyle.Render(m.spinner.View()+" Checking approval status") + "    " + dimStyle.Render("ctrl+c  cancel")
 	}
-	return "\n" + errorStyle.Bold(true).Render("Permission required") + "\n" + toolStyle.Render(p.ToolName) + "  " + p.Action + "\nResource: " + p.Resource + expires + "\n" + truncate(prettyJSON(p.Input), 3000) + "\n\n" + actions
+	content := warningStyle.Bold(true).Render("Permission required") + "\n" + meta + "\n\n" + dimStyle.Render(resource) + "\n\n" + truncate(prettyJSON(p.Input), 3000) + "\n\n" + actions
+	return lipgloss.NewStyle().Width(max(16, m.contentWidth()-4)).Padding(1, 1).Border(lipgloss.RoundedBorder()).BorderForeground(warningStyle.GetForeground()).Render(content)
 }
 func (m Model) statusView() string {
+	left, right := "", ""
 	if m.pending != nil {
 		if m.pending.submitted {
-			return toolStyle.Render("checking approval; task input is locked")
+			left, right = warningStyle.Render("checking approval"), dimStyle.Render("input locked")
+		} else {
+			left, right = warningStyle.Render("approval required"), dimStyle.Render("input locked")
 		}
-		return errorStyle.Render("waiting for approval")
+	} else if m.running {
+		left = warningStyle.Render(m.spinner.View() + " working  " + time.Since(m.started).Round(time.Second).String())
+		right = dimStyle.Render("esc cancel   ctrl+o details")
+	} else {
+		status := m.latestStatus
+		if status == "" {
+			status = "ready"
+		}
+		left = dimStyle.Render(status)
+		right = dimStyle.Render("enter send   ctrl+p commands   ctrl+l sessions")
 	}
-	if m.running {
-		return m.spinner.View() + fmt.Sprintf(" working | %s | Esc cancel | Ctrl+O details", time.Since(m.started).Round(time.Second))
+	if lipgloss.Width(left)+lipgloss.Width(right)+2 > m.contentWidth() {
+		return " " + left
 	}
-	status := m.latestStatus
-	if status == "" {
-		status = "ready"
-	}
-	return lipgloss.NewStyle().Foreground(muted).Render(status + " | Enter send | Ctrl+P commands | Ctrl+L sessions | Ctrl+O details")
+	gap := strings.Repeat(" ", m.contentWidth()-lipgloss.Width(left)-lipgloss.Width(right)-1)
+	return " " + left + gap + right
 }
 
 func (m Model) commandSuggestions() []struct{ name, description string } {
@@ -579,11 +635,11 @@ func (m Model) suggestionView(values []struct{ name, description string }) strin
 		}
 		lines = append(lines, prefix+toolStyle.Render(value.name)+"  "+lipgloss.NewStyle().Foreground(muted).Render(value.description))
 	}
-	return strings.Join(lines, "\n")
+	return lipgloss.NewStyle().Width(max(16, m.contentWidth()-4)).Padding(0, 1).Border(lipgloss.RoundedBorder()).BorderForeground(subtle).Render(strings.Join(lines, "\n"))
 }
 
 func (m Model) sessionPickerView() string {
-	lines := []string{agentStyle.Render("Sessions")}
+	lines := []string{agentStyle.Render("Sessions"), ""}
 	for i, session := range m.sessions {
 		cursor := "  "
 		if i == m.sessionIndex {
@@ -598,7 +654,7 @@ func (m Model) sessionPickerView() string {
 	if len(m.sessions) == 0 {
 		lines = append(lines, lipgloss.NewStyle().Foreground(muted).Render("No persisted sessions. Press n to create one."))
 	}
-	return strings.Join(lines, "\n")
+	return lipgloss.NewStyle().Width(max(16, m.contentWidth()-4)).Padding(1, 1).Border(lipgloss.RoundedBorder()).BorderForeground(accentSoft).Render(strings.Join(lines, "\n"))
 }
 
 func (m Model) startRun(ctx context.Context, prompt string) tea.Cmd {
@@ -721,6 +777,20 @@ func truncate(value string, limit int) string {
 		return value
 	}
 	return value[:limit] + "\n... truncated"
+}
+
+func truncateLine(value string, width int) string {
+	if width <= 3 {
+		return strings.Repeat(".", max(0, width))
+	}
+	if lipgloss.Width(value) <= width {
+		return value
+	}
+	runes := []rune(value)
+	for len(runes) > 0 && lipgloss.Width("..."+string(runes)) > width {
+		runes = runes[1:]
+	}
+	return "..." + string(runes)
 }
 
 func Run(ctx context.Context, app *icoder.App) error {
