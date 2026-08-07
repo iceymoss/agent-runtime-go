@@ -116,6 +116,8 @@ icoder version                 显示版本
 | `glob_files` | 按 glob 查找文件，支持 `**` | allow |
 | `read_file` | 结构化范围读取，返回行号、总行数、digest 与截断信息 | allow |
 | `search_code` | 字面或正则搜索，可按 glob 过滤 | allow |
+| `list_skills` | 列出可用 Skill metadata | allow |
+| `load_skill` | 按需读取一个 Skill 的完整不可信指令 | allow |
 | `git_status` | 查看分支和 workspace 状态 | allow |
 | `git_diff` | 查看 unstaged/staged diff | allow |
 | `edit_file` | 精确局部替换，支持 digest 冲突检查 | ask |
