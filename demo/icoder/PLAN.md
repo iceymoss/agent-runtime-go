@@ -103,7 +103,7 @@
 - [x] 支持 `.gitignore`/`.ignore`、二进制和大文件过滤。
 - [x] 扩展直接 argv 命令 profile，覆盖 Go、Node、Python 和 Rust。
 - [x] 返回 stdout、stderr、exit code、timeout 和 truncation 元数据。
-- [ ] 修改后跟踪 changed files 和 checks，未验证时明确标记。
+- [x] 修改后跟踪 changed files 和 checks，未验证时明确标记。
 
 验收：
 

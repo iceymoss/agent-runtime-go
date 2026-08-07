@@ -175,7 +175,7 @@ func (s *Store) CommitTurn(ctx context.Context, snapshot SessionSnapshot, reques
 	if _, err := tx.ExecContext(ctx, `INSERT INTO icoder_turns(session_id, request_id, input_digest, result_payload) VALUES(?, ?, ?, ?)`, snapshot.ID, requestID, inputDigest, resultPayload); err != nil {
 		return err
 	}
-	payload, err := marshalString(map[string]any{"outcome": result.Outcome, "stop_reason": result.StopReason, "usage": result.Usage})
+	payload, err := marshalString(map[string]any{"outcome": result.Outcome, "stop_reason": result.StopReason, "usage": result.Usage, "summary": summarizeRun(result.Messages)})
 	if err != nil {
 		return err
 	}
