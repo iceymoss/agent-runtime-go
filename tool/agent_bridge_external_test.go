@@ -285,6 +285,29 @@ func TestAgentRegistryProjectsApprovalSuspension(t *testing.T) {
 	}
 }
 
+func TestAgentRegistryResumesProjectedApproval(t *testing.T) {
+	implementation := newBridgeTool()
+	authorizer := &testPermission{decision: permission.DecisionAsk, revalidate: permission.DecisionAllow}
+	generation, executor := newBridgeExecutor(t, implementation, authorizer, nil)
+	bridged := getBridgeTool(t, newBridgeRegistry(t, generation, executor, bridgeResolver(nil)))
+	invocation := bridgeInvocation()
+
+	_, err := bridged.Execute(context.Background(), invocation)
+	suspension, ok := agent.AsToolSuspension(err)
+	if !ok {
+		t.Fatalf("Execute() error = %v, want approval suspension", err)
+	}
+	invocation.Resume = &suspension
+	result, err := bridged.Execute(context.Background(), invocation)
+	if err != nil || result.ToolCallID != invocation.CallID || implementation.calls.Load() != 1 || authorizer.revalidations.Load() != 1 {
+		t.Fatalf("resumed Execute() = %#v, %v, calls=%d revalidations=%d", result, err, implementation.calls.Load(), authorizer.revalidations.Load())
+	}
+	repeated, err := bridged.Execute(context.Background(), invocation)
+	if err != nil || repeated != result || implementation.calls.Load() != 1 {
+		t.Fatalf("repeated Execute() = %#v, %v, calls=%d", repeated, err, implementation.calls.Load())
+	}
+}
+
 func TestAgentRegistryRejectsNilExecutorResult(t *testing.T) {
 	implementation := newBridgeTool()
 	registry := lifecycle.NewRegistry()

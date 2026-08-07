@@ -22,6 +22,8 @@ type ToolSuspension struct {
 	RequestRef   string             `json:"request_ref,omitempty"`
 	ResumeToken  string             `json:"resume_token,omitempty"`
 	Revision     uint64             `json:"revision,omitempty"`
+	StepNumber   uint32             `json:"step_number,omitempty"`
+	Ordinal      uint32             `json:"ordinal,omitempty"`
 }
 
 type ToolSuspensionError struct {
@@ -78,10 +80,17 @@ type ExecutableVersioner interface {
 const LegacyExecutableVersion = "legacy"
 
 type ToolInvocation struct {
-	CallID       string `json:"call_id"`
-	Name         string `json:"name"`
-	RawInput     string `json:"raw_input"`
-	ExecutionKey string `json:"execution_key,omitempty"`
+	CallID       string          `json:"call_id"`
+	Name         string          `json:"name"`
+	RawInput     string          `json:"raw_input"`
+	ExecutionKey string          `json:"execution_key,omitempty"`
+	Resume       *ToolSuspension `json:"-"`
+}
+
+// ToolExecutionLifecycleOwner marks a tool adapter whose backend, rather than
+// the root durable runtime, owns the side-effect ledger and effect boundary.
+type ToolExecutionLifecycleOwner interface {
+	OwnsToolExecutionLifecycle() bool
 }
 
 type ReplayPolicy string
@@ -448,6 +457,15 @@ func (s *ToolSet) replayPolicy(name string) ReplayPolicy {
 		return ReplayPolicyNever
 	}
 	return entry.replayPolicy
+}
+
+func (s *ToolSet) ownsExecutionLifecycle(name string) bool {
+	entry, ok := s.tools[name]
+	if !ok {
+		return false
+	}
+	owner, ok := entry.tool.(ToolExecutionLifecycleOwner)
+	return ok && owner.OwnsToolExecutionLifecycle()
 }
 
 // Allowed reports whether the tool is on the allowlist.

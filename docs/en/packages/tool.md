@@ -25,7 +25,9 @@ type Interceptor interface {
 }
 ```
 
-The bridge requires `ResolveInvocation` to provide stable tenant/run/attempt/fence/resource/policy identity. An ordinary root Agent can project an approval blocker as `OutcomeSuspended`, `StopReasonToolSuspended`, and a `RunResult.Suspension` that contains no raw input. Durable approval checkpoint/resume and effect-ledger ownership are not complete yet, so ordinary suspension must not be treated as a durable recovery guarantee.
+The bridge requires `ResolveInvocation` to provide stable tenant/run/attempt/fence/resource/policy identity. The root Agent projects an approval blocker as `OutcomeSuspended`, `StopReasonToolSuspended`, and a `RunResult.Suspension` that contains no raw input. A durable run also checkpoints the blocker, step, and ordinal. After approval is resolved, the caller runs again with the unchanged persisted blocker in `DurableRunConfig.ToolResume`. The runtime rejects any receipt that does not exactly match the checkpoint and the bridge calls `ResumeApproval`.
+
+Bridge tools implement `agent.ToolExecutionLifecycleOwner`. The durable root therefore uses its tool record only as a prepared/completed model-loop cursor and does not call `BeginTool` around the advanced Executor. The `ExecutionLedger` backend is the sole owner of running, unknown, fence, and effect-boundary state. Ordinary `agent.Tool` implementations are unchanged and continue to use the complete root durable ledger lifecycle.
 
 After approval, call `ResumeApproval` with the original `ExecuteRequest` and the request ref, resume token, and revision from the blocker. The Executor recomputes and verifies the immutable prepared identity, runs permission revalidation, and crosses `Begin` only if the exact effect is still allowed. Repeated resume calls reuse a succeeded ledger result and do not repeat the side effect.
 

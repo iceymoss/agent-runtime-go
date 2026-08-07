@@ -90,6 +90,16 @@ func (e *Executor) ResumeApproval(ctx context.Context, request ResumeApprovalReq
 	if err := validateInvocation(request.Execute.Invocation); err != nil {
 		return ExecuteResult{}, err
 	}
+	if request.ExecutionKey != "" {
+		record, err := e.ledger.Load(ctx, request.ExecutionKey)
+		if err != nil {
+			return ExecuteResult{}, lifecycleError(ErrExecutionConflict, err, "resume approval", request.ExecutionKey, "prepared execution is unavailable")
+		}
+		if err := validateResumeInvocation(request.Execute.Invocation, record.Prepared); err != nil {
+			return ExecuteResult{Prepared: record.Prepared, Status: record.Status}, err
+		}
+		request.Execute.Invocation = invocationFromPrepared(record.Prepared)
+	}
 	prepared, entry, entered, immediate, err := e.prepare(ctx, request.Execute.Invocation)
 	if err != nil {
 		return ExecuteResult{}, err
@@ -122,6 +132,22 @@ func (e *Executor) ResumeApproval(ctx context.Context, request ResumeApprovalReq
 		return ExecuteResult{Prepared: prepared, Status: StatusPrepared}, lifecycleError(ErrAuthorizationFailed, nil, "resume approval", prepared.ExecutionKey, "approval revalidation did not allow execution")
 	}
 	return e.executePrepared(ctx, prepared, entry, entered)
+}
+
+func validateResumeInvocation(current InvocationIdentity, prepared PreparedExecution) error {
+	if current.TenantKey != prepared.TenantKey || current.RunKey != prepared.RunKey || current.StepNumber != prepared.StepNumber || current.Ordinal != prepared.Ordinal || current.CallID != prepared.CallID || current.ToolName != prepared.ToolName || current.RawInput != prepared.RawInput || current.PrincipalKey != prepared.PrincipalKey || current.SessionRef != prepared.SessionRef {
+		return lifecycleError(ErrExecutionConflict, nil, "resume approval", prepared.ExecutionKey, "invocation identity changed")
+	}
+	currentResource, currentErr := agent.CanonicalDigest(current.Resource)
+	preparedResource, preparedErr := agent.CanonicalDigest(prepared.Resource)
+	if currentErr != nil || preparedErr != nil || currentResource != preparedResource {
+		return lifecycleError(ErrExecutionConflict, errors.Join(currentErr, preparedErr), "resume approval", prepared.ExecutionKey, "resource changed")
+	}
+	return nil
+}
+
+func invocationFromPrepared(prepared PreparedExecution) InvocationIdentity {
+	return InvocationIdentity{TenantKey: prepared.TenantKey, RunKey: prepared.RunKey, AttemptKey: prepared.AttemptKey, FenceToken: prepared.FenceToken, StepNumber: prepared.StepNumber, Ordinal: prepared.Ordinal, CallID: prepared.CallID, ToolName: prepared.ToolName, RawInput: prepared.RawInput, PrincipalKey: prepared.PrincipalKey, SessionRef: prepared.SessionRef, Resource: prepared.Resource}
 }
 
 func (e *Executor) executePrepared(ctx context.Context, prepared PreparedExecution, entry registration, entered []Interceptor) (ExecuteResult, error) {

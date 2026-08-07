@@ -196,8 +196,9 @@ type ApprovalResume struct {
 }
 
 type ResumeApprovalRequest struct {
-	Execute  ExecuteRequest
-	Approval ApprovalResume
+	Execute      ExecuteRequest
+	ExecutionKey string
+	Approval     ApprovalResume
 }
 
 type ExecuteResult struct {

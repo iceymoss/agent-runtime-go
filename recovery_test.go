@@ -404,6 +404,15 @@ func testRunSnapshot() RunSnapshot {
 	}
 }
 
+func TestCheckpointCloneDoesNotAliasToolSuspension(t *testing.T) {
+	checkpoint := Checkpoint{Outcome: RunResult{Suspension: &RunSuspension{Reason: StopReasonToolSuspended, Tool: &ToolSuspension{Kind: ToolSuspensionApproval, ResumeToken: "original"}}}}
+	cloned := checkpoint.Clone()
+	cloned.Outcome.Suspension.Tool.ResumeToken = "changed"
+	if checkpoint.Outcome.Suspension.Tool.ResumeToken != "original" {
+		t.Fatal("Checkpoint.Clone() aliased the tool suspension")
+	}
+}
+
 func withRunState(snapshot RunSnapshot, status RunStatus, phase RunPhase) RunSnapshot {
 	snapshot.Status = status
 	snapshot.Phase = phase

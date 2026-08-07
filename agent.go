@@ -196,7 +196,10 @@ type DurableRunConfig struct {
 	ConfigDigest    string
 	PromptVersion   string
 	PolicyVersion   string
-	AutoComplete    bool
+	// ToolResume carries the exact persisted blocker being resumed. The
+	// authoritative approval decision remains in the permission service.
+	ToolResume   *ToolSuspension
+	AutoComplete bool
 	// DeferFailureFinalization leaves retryable suspension to the domain
 	// transaction instead of persisting it independently.
 	DeferFailureFinalization bool
@@ -433,6 +436,9 @@ func (a *Agent) runDurable(ctx context.Context, request RunRequest) (result *Run
 	if err != nil {
 		return result, fmt.Errorf("begin durable run: %w", err)
 	}
+	if _, err := durableToolResume(snapshot.Checkpoint, durable.ToolResume); err != nil {
+		return result, err
+	}
 	if snapshot.Status == RunStatusCompleted {
 		stored := snapshot.Checkpoint.Outcome
 		stored.DurableCompletion = nil
@@ -610,6 +616,16 @@ func (a *Agent) resumeDurableTools(ctx context.Context, request RunRequest, snap
 	}
 	stepIndex := len(checkpoint.CompletedSteps) - 1
 	step := checkpoint.CompletedSteps[stepIndex]
+	resume, err := durableToolResume(checkpoint, request.DurableRun.ToolResume)
+	if err != nil {
+		return snapshot, checkpoint, err
+	}
+	if checkpoint.Outcome.StopReason == StopReasonToolSuspended && resume == nil {
+		return snapshot, checkpoint, nil
+	}
+	if resume != nil {
+		checkpoint.Outcome = RunResult{}
+	}
 	next, err := a.nextRequest(checkpoint.History[:len(checkpoint.History)-1], checkpoint.CompletedSteps[:stepIndex], request)
 	if err != nil {
 		return snapshot, checkpoint, err
@@ -628,15 +644,21 @@ func (a *Agent) resumeDurableTools(ctx context.Context, request RunRequest, snap
 		}
 	}
 
-	results := make([]ToolResult, 0, len(executions))
+	if len(step.ToolResults) > len(executions) {
+		return snapshot, checkpoint, fmt.Errorf("%w: tool results exceed pending calls", ErrInvalidRunTransition)
+	}
+	results := append([]ToolResult(nil), step.ToolResults...)
 	stopTurn := false
-	for i := range executions {
+	for i := len(results); i < len(executions); i++ {
 		call := executions[i].ToolCall
-		safeReplay := next.toolSet.replayPolicy(call.Name) == ReplayPolicyIdempotent
-		var execution ToolExecution
-		snapshot, execution, err = request.DurableRun.CheckpointStore.BeginTool(ctx, snapshot.Guard(), executions[i].IdempotencyKey, safeReplay)
-		if err != nil {
-			return snapshot, checkpoint, err
+		backendOwned := next.toolSet.ownsExecutionLifecycle(call.Name)
+		execution := executions[i]
+		if !backendOwned {
+			safeReplay := next.toolSet.replayPolicy(call.Name) == ReplayPolicyIdempotent
+			snapshot, execution, err = request.DurableRun.CheckpointStore.BeginTool(ctx, snapshot.Guard(), executions[i].IdempotencyKey, safeReplay)
+			if err != nil {
+				return snapshot, checkpoint, err
+			}
 		}
 		var result ToolResult
 		invalid := false
@@ -644,7 +666,24 @@ func (a *Agent) resumeDurableTools(ctx context.Context, request RunRequest, snap
 			result = *execution.Result
 		} else {
 			observer.emit(Observation{Type: ObservationToolCall, ToolCall: &call})
-			result, invalid, err = a.execOne(ctx, next.toolSet, call, execution.IdempotencyKey)
+			var callResume *ToolSuspension
+			if resume != nil && resume.StepNumber == uint32(step.StepNumber) && resume.Ordinal == uint32(i) {
+				callResume = resume
+			}
+			result, invalid, err = a.execOneWithResume(ctx, next.toolSet, call, execution.IdempotencyKey, callResume)
+			if suspension, ok := AsToolSuspension(err); ok {
+				suspension.StepNumber = uint32(step.StepNumber)
+				suspension.Ordinal = uint32(i)
+				step.ToolResults = append([]ToolResult(nil), results...)
+				checkpoint.CompletedSteps[stepIndex] = step
+				checkpoint.Outcome = *resultFromCheckpoint(checkpoint, a.cfg.ModelName)
+				checkpoint.Outcome.Text = step.Message.Text()
+				checkpoint.Outcome.StopReason = StopReasonToolSuspended
+				checkpoint.Outcome.Outcome = OutcomeSuspended
+				checkpoint.Outcome.Suspension = &RunSuspension{Reason: StopReasonToolSuspended, Tool: &suspension}
+				observer.emit(Observation{Type: ObservationStepFinished, Step: &step})
+				return snapshot, checkpoint, nil
+			}
 			if err != nil {
 				return snapshot, checkpoint, err
 			}
@@ -705,6 +744,24 @@ func (a *Agent) resumeDurableTools(ctx context.Context, request RunRequest, snap
 		}
 	}
 	return snapshot, checkpoint, nil
+}
+
+func durableToolResume(checkpoint Checkpoint, supplied *ToolSuspension) (*ToolSuspension, error) {
+	if checkpoint.Outcome.StopReason != StopReasonToolSuspended || checkpoint.Outcome.Suspension == nil || checkpoint.Outcome.Suspension.Tool == nil {
+		if supplied != nil {
+			return nil, fmt.Errorf("%w: tool resume has no persisted suspension", ErrAgentConfigInvalid)
+		}
+		return nil, nil
+	}
+	persisted := checkpoint.Outcome.Suspension.Tool
+	if supplied == nil {
+		return nil, nil
+	}
+	if *supplied != *persisted {
+		return nil, fmt.Errorf("%w: tool resume does not match persisted suspension", ErrAgentConfigInvalid)
+	}
+	resume := *supplied
+	return &resume, nil
 }
 
 type stepRequest struct {
@@ -886,6 +943,10 @@ func (a *Agent) execTools(ctx context.Context, toolSet *ToolSet, calls []ToolCal
 // execOne keeps availability/input failures model-visible and returns Tool Go
 // errors as fatal attempt errors.
 func (a *Agent) execOne(ctx context.Context, toolSet *ToolSet, call ToolCall, executionKey string) (ToolResult, bool, error) {
+	return a.execOneWithResume(ctx, toolSet, call, executionKey, nil)
+}
+
+func (a *Agent) execOneWithResume(ctx context.Context, toolSet *ToolSet, call ToolCall, executionKey string, resume *ToolSuspension) (ToolResult, bool, error) {
 	errResult := func(content string) ToolResult {
 		return ToolResult{ToolCallID: call.ID, Name: call.Name, Content: content, IsError: true}
 	}
@@ -899,7 +960,7 @@ func (a *Agent) execOne(ctx context.Context, toolSet *ToolSet, call ToolCall, ex
 		return errResult(fmt.Sprintf("%s. Reply with a valid JSON object that conforms to the tool's JSON Schema.", err.Error())), true, nil
 	}
 
-	res, err := tool.Execute(ctx, ToolInvocation{CallID: call.ID, Name: call.Name, RawInput: call.Input, ExecutionKey: executionKey})
+	res, err := tool.Execute(ctx, ToolInvocation{CallID: call.ID, Name: call.Name, RawInput: call.Input, ExecutionKey: executionKey, Resume: resume})
 	if err != nil {
 		if _, ok := AsToolSuspension(err); ok {
 			return ToolResult{}, false, err

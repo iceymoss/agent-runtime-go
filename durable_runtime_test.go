@@ -157,6 +157,65 @@ func TestRunDurableToolErrorDisposition(t *testing.T) {
 	}
 }
 
+func TestRunDurableToolSuspensionResumesWithoutRootEffectBoundary(t *testing.T) {
+	tool := &durableSuspendingTool{}
+	model := &fakeModel{steps: []scriptedStep{{calls: []ToolCall{{ID: "call", Name: "approve", Input: `{}`}}}, {text: "done"}}}
+	a := newTestAgent(t, Config{Key: "runtime-test", MaxSteps: 4}, model, tool)
+	store := newRuntimeMemoryStore()
+	request := durableRuntimeRequest(store, "tool-suspension")
+
+	first, err := a.Run(context.Background(), request)
+	if err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	if first.Outcome != OutcomeSuspended || first.StopReason != StopReasonToolSuspended || first.Suspension == nil || first.Suspension.Tool == nil {
+		t.Fatalf("first result = %+v, want tool suspension", first)
+	}
+	if store.snapshot.Status != RunStatusSuspended || len(store.safeReplay) != 0 || tool.calls != 1 {
+		t.Fatalf("snapshot=%+v root begins=%v tool calls=%d", store.snapshot, store.safeReplay, tool.calls)
+	}
+	wakeup, err := a.Run(context.Background(), request)
+	if err != nil || wakeup.Outcome != OutcomeSuspended || tool.calls != 1 || model.calls != 1 {
+		t.Fatalf("unresolved Run() = %+v, %v, tool calls=%d model calls=%d", wakeup, err, tool.calls, model.calls)
+	}
+	wrong := *first.Suspension.Tool
+	wrong.ResumeToken = "wrong"
+	request.DurableRun.ToolResume = &wrong
+	if _, err := a.Run(context.Background(), request); !errors.Is(err, ErrAgentConfigInvalid) || tool.calls != 1 || model.calls != 1 {
+		t.Fatalf("mismatched Run() error=%v tool calls=%d model calls=%d", err, tool.calls, model.calls)
+	}
+
+	resume := *first.Suspension.Tool
+	request.DurableRun.ToolResume = &resume
+	second, err := a.Run(context.Background(), request)
+	if err != nil {
+		t.Fatalf("resumed Run() error = %v", err)
+	}
+	if second.Outcome != OutcomeCompleted || second.Text != "done" || tool.calls != 2 || len(store.safeReplay) != 0 || model.calls != 2 {
+		t.Fatalf("resumed result=%+v tool calls=%d root begins=%v model calls=%d", second, tool.calls, store.safeReplay, model.calls)
+	}
+}
+
+type durableSuspendingTool struct {
+	calls int
+}
+
+func (*durableSuspendingTool) Definition() ToolDefinition {
+	return ToolDefinition{Name: "approve", Strict: true, Parameters: map[string]any{"type": "object", "additionalProperties": false}}
+}
+func (*durableSuspendingTool) ReplayPolicy() ReplayPolicy { return ReplayPolicyNever }
+func (*durableSuspendingTool) ExecutableVersion() string  { return "v1" }
+func (*durableSuspendingTool) OwnsToolExecutionLifecycle() bool {
+	return true
+}
+func (t *durableSuspendingTool) Execute(_ context.Context, invocation ToolInvocation) (ToolResult, error) {
+	t.calls++
+	if invocation.Resume == nil {
+		return ToolResult{}, &ToolSuspensionError{Suspension: ToolSuspension{Kind: ToolSuspensionApproval, ExecutionKey: "advanced-key", RequestRef: "approval", ResumeToken: "opaque", Revision: 1}}
+	}
+	return ToolResult{ToolCallID: invocation.CallID, Name: invocation.Name, Content: "approved"}, nil
+}
+
 func durableRuntimeRequest(store CheckpointStore, key string) RunRequest {
 	return RunRequest{Messages: []Message{NewUserMessage("input")}, DurableRun: &DurableRunConfig{
 		Identity:        RunIdentity{RunKey: key, AgentKey: "runtime-test", SessionID: "1", RequestID: key},

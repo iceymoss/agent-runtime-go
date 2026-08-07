@@ -109,6 +109,7 @@ Key points:
 - `agent.New` validates the full config at assembly (non-nil model, valid schema, capabilities cover needs); config errors do not surface mid-request.
 - `RunResult.Messages` holds only assistant/tool messages produced this turn; you persist the input user message under your own transaction rules.
 - Judge results with three values together: `err`, `result.Outcome`, `result.StopReason`. `OutcomeCompleted` is normal completion; `OutcomeSuspended` means interrupted by steps/output length/context budget and the upper layer may resume; `OutcomeFailed` comes with a non-nil error.
+- When a tool returns `ToolSuspensionError`, Agent does not fabricate a tool message. It returns `StopReasonToolSuspended` with a typed `RunResult.Suspension`. Durable calls checkpoint that blocker and require it unchanged in `DurableRunConfig.ToolResume` when resuming.
 
 ### Two ways to define tools
 

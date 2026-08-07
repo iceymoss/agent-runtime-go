@@ -109,6 +109,7 @@ func main() {
 - `agent.New` 在装配期就校验全部配置（model 非 nil、schema 合法、capability 覆盖需求），配置错误不会拖到请求中途才暴露。
 - `RunResult.Messages` 只包含本轮新产生的 assistant/tool 消息；输入的 user message 由你自己按事务规则保存。
 - 判断结果要联合看三个值：`err`、`result.Outcome`、`result.StopReason`。`OutcomeCompleted` 是正常完成；`OutcomeSuspended` 表示被步数/输出长度/上下文预算中断，上层可决定续跑；`OutcomeFailed` 伴随非 nil error。
+- 工具返回 `ToolSuspensionError` 时，Agent 不会伪造 tool message，而是返回 `StopReasonToolSuspended` 和 typed `RunResult.Suspension`。durable 调用会 checkpoint 该 blocker；恢复时必须通过 `DurableRunConfig.ToolResume` 原样提交。
 
 ### 定义工具的两种方式
 

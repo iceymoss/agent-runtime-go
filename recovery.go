@@ -370,6 +370,14 @@ func (checkpoint Checkpoint) Clone() Checkpoint {
 	cloned.PendingToolCalls = append([]ToolCall(nil), checkpoint.PendingToolCalls...)
 	cloned.Outcome.Messages = cloneMessages(checkpoint.Outcome.Messages)
 	cloned.Outcome.Steps = cloneSteps(checkpoint.Outcome.Steps)
+	if checkpoint.Outcome.Suspension != nil {
+		suspension := *checkpoint.Outcome.Suspension
+		if suspension.Tool != nil {
+			tool := *suspension.Tool
+			suspension.Tool = &tool
+		}
+		cloned.Outcome.Suspension = &suspension
+	}
 	return cloned
 }
 

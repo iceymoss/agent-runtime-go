@@ -25,7 +25,9 @@ type Interceptor interface {
 }
 ```
 
-当前 bridge 要求调用方通过 `ResolveInvocation` 提供稳定的 tenant/run/attempt/fence/resource/policy 身份。普通 root Agent 可以把 approval blocker 返回为 `OutcomeSuspended`、`StopReasonToolSuspended` 和不含原始输入的 `RunResult.Suspension`；durable approval 的 checkpoint/resume 与 effect-ledger ownership 尚未完成，因此不能把普通 suspension 当作 durable 恢复承诺。
+bridge 要求调用方通过 `ResolveInvocation` 提供稳定的 tenant/run/attempt/fence/resource/policy 身份。root Agent 会把 approval blocker 返回为 `OutcomeSuspended`、`StopReasonToolSuspended` 和不含原始输入的 `RunResult.Suspension`。durable 运行还会将 blocker、step 和 ordinal 写入 checkpoint；审批解决后，调用方把原样保存的 blocker 放入 `DurableRunConfig.ToolResume` 再次运行。runtime 会拒绝与 checkpoint 不完全匹配的 receipt，并由 bridge 调用 `ResumeApproval`。
+
+bridge 工具实现了 `agent.ToolExecutionLifecycleOwner`。durable root 因此只用自己的 tool record 保存模型循环的 prepared/completed cursor，不会在高级 Executor 外再调用 `BeginTool`：running、unknown、fence 和 effect boundary 只由 `ExecutionLedger` 的后端拥有。普通 `agent.Tool` 不受影响，仍由 root durable ledger 管理完整生命周期。
 
 审批通过后，调用方使用原始 `ExecuteRequest` 和 blocker 中的 request ref、resume token、revision 调用 `ResumeApproval`。Executor 会重新计算并验证 immutable prepared identity，调用 permission revalidation，只有精确 effect 仍被允许时才进入 `Begin` 和执行；重复 resume 会复用 ledger 中的成功结果，不会重复副作用。
 
