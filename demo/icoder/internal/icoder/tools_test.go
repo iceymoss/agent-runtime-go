@@ -3,6 +3,7 @@ package icoder
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -183,6 +184,8 @@ func TestValidateCommandAllowlist(t *testing.T) {
 		{program: "go", args: []string{"test", "./..."}, valid: true},
 		{program: "gofmt", args: []string{"-w", "main.go"}, valid: true},
 		{program: "git", args: []string{"diff"}, valid: true},
+		{program: "git", args: []string{"commit", "-m", "message"}},
+		{program: "git", args: []string{"add", "--", "file.go"}},
 		{program: "npm", args: []string{"test"}, valid: true},
 		{program: "pnpm", args: []string{"lint"}, valid: true},
 		{program: "pytest", args: []string{"tests"}, valid: true},
@@ -200,6 +203,41 @@ func TestValidateCommandAllowlist(t *testing.T) {
 		if (err == nil) != test.valid {
 			t.Errorf("validateCommand(%q, %#v) error = %v", test.program, test.args, err)
 		}
+	}
+}
+
+func TestRunCommandToolReturnsInvalidCWDAsToolError(t *testing.T) {
+	workspace, err := NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := runCommandTool{workspace: workspace}
+	result, err := tool.Execute(context.Background(), agent.ToolInvocation{RawInput: fmt.Sprintf(`{"program":"git","args":["status"],"cwd":%q}`, workspace.root)})
+	if err != nil || !result.IsError || !strings.Contains(result.Content, "absolute paths are not allowed") {
+		t.Fatalf("result=%#v error=%v", result, err)
+	}
+}
+
+func TestGitCommitToolRequiresApproval(t *testing.T) {
+	workspace, err := NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewPermissionService(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := agent.NewRegistry()
+	if err := registerTools(registry, workspace, nil, service, func() string { return "session" }); err != nil {
+		t.Fatal(err)
+	}
+	tool, ok := registry.Get("git_commit")
+	if !ok {
+		t.Fatal("git_commit was not registered")
+	}
+	result, err := tool.Execute(context.Background(), agent.ToolInvocation{CallID: "commit", Name: "git_commit", RawInput: `{"message":"test: commit","paths":["file.go"]}`})
+	if err != nil || !result.IsError || !result.StopTurn || !strings.Contains(result.Content, "approval is unavailable") {
+		t.Fatalf("result=%#v error=%v", result, err)
 	}
 }
 

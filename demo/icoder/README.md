@@ -129,6 +129,7 @@ icoder version                 显示版本
 | `load_skill` | 按需读取一个 Skill 的完整不可信指令 | allow |
 | `git_status` | 查看分支和 workspace 状态 | allow |
 | `git_diff` | 查看 unstaged/staged diff | allow |
+| `git_commit` | 暂存明确的相对路径并创建普通 commit；拒绝无关 staged 文件，不支持 amend/push | ask |
 | `edit_file` | 精确局部替换，支持 digest 冲突检查 | ask |
 | `apply_patch` | 批量创建、精确更新和删除文件，支持预检与失败回滚 | ask |
 | `move_file` | 在 workspace 内移动文件，不覆盖已有目标 | ask |
@@ -149,7 +150,7 @@ icoder version                 显示版本
 ./icoder run --workspace /path/to/repository --allow-writes '完成修改并测试'
 ```
 
-`--allow-writes` 是进程级授权，不是 sandbox。工具使用当前用户身份运行，路径限制也不能替代操作系统隔离。`run_command` 不启动 shell，只允许预定义的 Go、Node、Python、Rust、Make 和只读 Git profile；只读审查应优先使用无需审批的 `git_status` 与 `git_diff`。
+`--allow-writes` 是进程级授权，不是 sandbox。工具使用当前用户身份运行，路径限制也不能替代操作系统隔离。`run_command` 不启动 shell，只允许预定义的 Go、Node、Python、Rust、Make 和只读 Git profile；只读审查应优先使用无需审批的 `git_status` 与 `git_diff`。用户明确要求提交时，Agent 使用独立的 `git_commit` 工具：它只接受明确的 workspace 相对路径和单行 message，保留 commit hooks，并拒绝把请求范围外的 staged 文件带入 commit。
 
 ## 数据与扩展
 

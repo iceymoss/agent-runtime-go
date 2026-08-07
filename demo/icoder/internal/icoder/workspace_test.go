@@ -99,6 +99,63 @@ func TestWorkspaceRunCommandReturnsStructuredOutputAndCWD(t *testing.T) {
 	}
 }
 
+func TestWorkspaceGitCommitStagesOnlyRequestedPaths(t *testing.T) {
+	workspace := newGitWorkspace(t)
+	writeTestFile(t, workspace.root, "first.txt", "first changed\n")
+	writeTestFile(t, workspace.root, "second.txt", "second changed\n")
+
+	result, err := workspace.GitCommit(context.Background(), "test: update first", []string{"first.txt"})
+	if err != nil || result.Commit == "" || len(result.Paths) != 1 || result.Paths[0] != "first.txt" {
+		t.Fatalf("GitCommit()=%#v error=%v", result, err)
+	}
+	show, err := workspace.RunCommand(context.Background(), "git", []string{"show", "--pretty=format:", "--name-only", "HEAD"}, 30*time.Second)
+	if err != nil || strings.TrimSpace(show.Stdout) != "first.txt" {
+		t.Fatalf("git show=%#v error=%v", show, err)
+	}
+	status, err := workspace.RunCommand(context.Background(), "git", []string{"status", "--short"}, 30*time.Second)
+	if err != nil || !strings.Contains(status.Stdout, " M second.txt") || strings.Contains(status.Stdout, "first.txt") {
+		t.Fatalf("git status=%#v error=%v", status, err)
+	}
+}
+
+func TestWorkspaceGitCommitRejectsUnrelatedStagedPaths(t *testing.T) {
+	workspace := newGitWorkspace(t)
+	writeTestFile(t, workspace.root, "first.txt", "first changed\n")
+	writeTestFile(t, workspace.root, "second.txt", "second changed\n")
+	staged, err := workspace.RunCommand(context.Background(), "git", []string{"add", "--", "second.txt"}, 30*time.Second)
+	if err != nil || staged.ExitCode != 0 {
+		t.Fatalf("git add=%#v error=%v", staged, err)
+	}
+	if _, err := workspace.GitCommit(context.Background(), "test: update first", []string{"first.txt"}); err == nil || !strings.Contains(err.Error(), "unrelated staged paths: second.txt") {
+		t.Fatalf("GitCommit() error=%v", err)
+	}
+}
+
+func newGitWorkspace(t *testing.T) *Workspace {
+	t.Helper()
+	root := t.TempDir()
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, root, "first.txt", "first\n")
+	writeTestFile(t, root, "second.txt", "second\n")
+	for _, args := range [][]string{{"init"}, {"config", "user.name", "iCoder Test"}, {"config", "user.email", "icoder@example.invalid"}, {"add", "--", "first.txt", "second.txt"}, {"commit", "-m", "test: initial"}} {
+		result, runErr := workspace.RunCommand(context.Background(), "git", args, 30*time.Second)
+		if runErr != nil || result.ExitCode != 0 {
+			t.Fatalf("git %v=%#v error=%v", args, result, runErr)
+		}
+	}
+	return workspace
+}
+
+func writeTestFile(t *testing.T, root, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLimitedBufferReportsTruncation(t *testing.T) {
 	buffer := &limitedBuffer{limit: 5}
 	written, err := buffer.Write([]byte("123456789"))

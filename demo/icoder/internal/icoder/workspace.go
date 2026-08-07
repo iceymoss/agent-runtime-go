@@ -49,6 +49,13 @@ type CommandResult struct {
 	StderrTruncated bool   `json:"stderr_truncated"`
 }
 
+type GitCommitResult struct {
+	Commit  string   `json:"commit"`
+	Message string   `json:"message"`
+	Paths   []string `json:"paths"`
+	Output  string   `json:"output,omitempty"`
+}
+
 type limitedBuffer struct {
 	buffer    bytes.Buffer
 	limit     int
@@ -462,6 +469,7 @@ func (w *Workspace) RunCommandIn(ctx context.Context, program string, args []str
 	command := exec.CommandContext(commandCtx, program, args...)
 	command.Dir = workingDirectory
 	command.Env = append([]string(nil), os.Environ()...)
+	command.Env = append(command.Env, "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true", "GIT_SEQUENCE_EDITOR=true", "GIT_PAGER=cat", "PAGER=cat")
 	stdout := &limitedBuffer{limit: maxToolOutput}
 	stderr := &limitedBuffer{limit: maxToolOutput}
 	command.Stdout = stdout
@@ -485,6 +493,156 @@ func (w *Workspace) RunCommandIn(ctx context.Context, program string, args []str
 		return result, nil
 	}
 	return CommandResult{}, err
+}
+
+func (w *Workspace) GitCommit(ctx context.Context, message string, paths []string) (GitCommitResult, error) {
+	message = strings.TrimSpace(message)
+	if message == "" || len(message) > 200 || strings.ContainsAny(message, "\r\n") {
+		return GitCommitResult{}, fmt.Errorf("commit message must be one non-empty line of at most 200 bytes")
+	}
+	for _, r := range message {
+		if r < 32 || r == 127 {
+			return GitCommitResult{}, fmt.Errorf("commit message contains control characters")
+		}
+	}
+	if len(paths) == 0 || len(paths) > 100 {
+		return GitCommitResult{}, fmt.Errorf("git commit requires 1 to 100 explicit paths")
+	}
+	topResult, err := w.RunCommand(ctx, "git", []string{"rev-parse", "--show-toplevel"}, 30*time.Second)
+	if err != nil {
+		return GitCommitResult{}, err
+	}
+	if topResult.ExitCode != 0 {
+		return GitCommitResult{}, commandFailure("resolve repository", topResult)
+	}
+	repository := strings.TrimSpace(topResult.Stdout)
+	if repository == "" || !filepath.IsAbs(repository) || !within(repository, w.root) {
+		return GitCommitResult{}, fmt.Errorf("workspace is not inside the resolved Git repository")
+	}
+	requested := make(map[string]struct{}, len(paths))
+	normalized := make([]string, 0, len(paths))
+	for _, name := range paths {
+		repositoryPath, pathErr := w.gitCommitPath(repository, name)
+		if pathErr != nil {
+			return GitCommitResult{}, pathErr
+		}
+		if _, duplicate := requested[repositoryPath]; duplicate {
+			continue
+		}
+		requested[repositoryPath] = struct{}{}
+		normalized = append(normalized, repositoryPath)
+	}
+	sort.Strings(normalized)
+	staged, err := w.gitStagedPaths(ctx)
+	if err != nil {
+		return GitCommitResult{}, err
+	}
+	if unexpected := unexpectedPaths(staged, requested); len(unexpected) > 0 {
+		return GitCommitResult{}, fmt.Errorf("refusing to include unrelated staged paths: %s", strings.Join(unexpected, ", "))
+	}
+	addArgs := []string{"add", "--"}
+	for _, name := range normalized {
+		addArgs = append(addArgs, ":(top,literal)"+name)
+	}
+	addResult, err := w.RunCommand(ctx, "git", addArgs, 30*time.Second)
+	if err != nil {
+		return GitCommitResult{}, err
+	}
+	if addResult.ExitCode != 0 {
+		return GitCommitResult{}, commandFailure("stage paths", addResult)
+	}
+	staged, err = w.gitStagedPaths(ctx)
+	if err != nil {
+		return GitCommitResult{}, err
+	}
+	if len(staged) == 0 {
+		return GitCommitResult{}, fmt.Errorf("none of the requested paths contain changes to commit")
+	}
+	if unexpected := unexpectedPaths(staged, requested); len(unexpected) > 0 {
+		return GitCommitResult{}, fmt.Errorf("staged paths changed concurrently; refusing to commit: %s", strings.Join(unexpected, ", "))
+	}
+	commitArgs := []string{"commit", "--only", "-m", message, "--"}
+	for _, name := range normalized {
+		commitArgs = append(commitArgs, ":(top,literal)"+name)
+	}
+	commitResult, err := w.RunCommand(ctx, "git", commitArgs, 2*time.Minute)
+	if err != nil {
+		return GitCommitResult{}, err
+	}
+	if commitResult.ExitCode != 0 {
+		return GitCommitResult{}, fmt.Errorf("%w; requested paths remain staged", commandFailure("create commit", commitResult))
+	}
+	headResult, err := w.RunCommand(ctx, "git", []string{"rev-parse", "--verify", "HEAD"}, 30*time.Second)
+	if err != nil {
+		return GitCommitResult{}, err
+	}
+	if headResult.ExitCode != 0 {
+		return GitCommitResult{}, commandFailure("read commit identity", headResult)
+	}
+	return GitCommitResult{Commit: strings.TrimSpace(headResult.Stdout), Message: message, Paths: staged, Output: strings.TrimSpace(commitResult.Stdout + commitResult.Stderr)}, nil
+}
+
+func (w *Workspace) gitCommitPath(repository, name string) (string, error) {
+	if name == "" || filepath.IsAbs(name) || name == "." || strings.HasPrefix(name, ":") || strings.ContainsAny(name, "*?[") {
+		return "", fmt.Errorf("commit paths must be explicit relative workspace paths: %q", name)
+	}
+	path := filepath.Clean(filepath.Join(w.WorkingDirectory(), filepath.Clean(name)))
+	if !within(w.root, path) || path == w.root {
+		return "", fmt.Errorf("commit path escapes workspace: %q", name)
+	}
+	parent := filepath.Dir(path)
+	resolvedParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", fmt.Errorf("resolve commit path %q: %w", name, err)
+	}
+	if !within(w.root, resolvedParent) {
+		return "", fmt.Errorf("commit path escapes workspace through a symlink: %q", name)
+	}
+	relative, err := filepath.Rel(repository, path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("commit path is outside the Git repository: %q", name)
+	}
+	return filepath.ToSlash(relative), nil
+}
+
+func (w *Workspace) gitStagedPaths(ctx context.Context) ([]string, error) {
+	result, err := w.RunCommand(ctx, "git", []string{"diff", "--cached", "--name-only", "-z"}, 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if result.ExitCode != 0 {
+		return nil, commandFailure("inspect staged paths", result)
+	}
+	parts := strings.Split(result.Stdout, "\x00")
+	paths := make([]string, 0, len(parts))
+	for _, path := range parts {
+		if path != "" {
+			paths = append(paths, filepath.ToSlash(path))
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func unexpectedPaths(paths []string, allowed map[string]struct{}) []string {
+	var unexpected []string
+	for _, path := range paths {
+		if _, ok := allowed[path]; !ok {
+			unexpected = append(unexpected, path)
+		}
+	}
+	return unexpected
+}
+
+func commandFailure(operation string, result CommandResult) error {
+	detail := strings.TrimSpace(result.Stderr)
+	if detail == "" {
+		detail = strings.TrimSpace(result.Stdout)
+	}
+	if detail == "" {
+		detail = fmt.Sprintf("exit code %d", result.ExitCode)
+	}
+	return fmt.Errorf("git %s failed: %s", operation, detail)
 }
 
 func searchFile(path, root, pattern string, limit int) (matches []SearchMatch, resultErr error) {

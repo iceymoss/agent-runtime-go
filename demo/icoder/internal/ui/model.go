@@ -790,6 +790,18 @@ func approvalDetails(prompt icoder.ApprovalPrompt, width int) string {
 		lines = append(lines, fieldLine("target", target, width))
 		delete(input, "path")
 	}
+	if values, ok := input["paths"].([]any); ok {
+		paths := make([]string, 0, len(values))
+		for _, value := range values {
+			if path, ok := value.(string); ok {
+				paths = append(paths, path)
+			}
+		}
+		if len(paths) > 0 {
+			lines = append(lines, fieldLine("paths", strings.Join(paths, ", "), width))
+		}
+		delete(input, "paths")
+	}
 	if prompt.Resource != "" {
 		lines = append(lines, fieldLine("scope", prompt.Resource, width))
 	}
@@ -842,6 +854,8 @@ func approvalScopeLabel(action string) string {
 		return "allow workspace writes for this session"
 	case "workspace.command":
 		return "allow safe commands for this session"
+	case "workspace.commit":
+		return "allow Git commits for this session"
 	case "network.read":
 		return "allow network reads for this session"
 	case "network.tool":
@@ -857,6 +871,8 @@ func approvalScopeName(action string) string {
 		return "writes"
 	case "workspace.command":
 		return "commands"
+	case "workspace.commit":
+		return "commits"
 	case "network.read":
 		return "network"
 	case "network.tool":
@@ -1146,6 +1162,9 @@ func toolSummary(call agent.ToolCall) string {
 		}
 		if program, ok := input["program"].(string); ok {
 			return call.Name + " " + program
+		}
+		if message, ok := input["message"].(string); ok && call.Name == "git_commit" {
+			return call.Name + " " + truncateLine(message, 60)
 		}
 	}
 	return call.Name

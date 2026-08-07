@@ -177,7 +177,7 @@ func NewPermissionService(allowWrites bool) (permission.Service, error) {
 		switch request.Action {
 		case "workspace.read", "workspace.search", "network.read", "subagent.spawn":
 			result.Decision, result.RuleKey = permission.DecisionAllow, "safe-local-operation"
-		case "workspace.write", "workspace.command", "network.tool":
+		case "workspace.write", "workspace.command", "workspace.commit", "network.tool":
 			if allowWrites {
 				result.Decision, result.RuleKey = permission.DecisionAllow, "cli-write-flag"
 			} else {
@@ -410,6 +410,7 @@ func (t writeFileTool) Definition() agent.ToolDefinition {
 }
 
 type runCommandTool struct{ workspace *Workspace }
+type gitCommitTool struct{ workspace *Workspace }
 
 type gitStatusTool struct{ workspace *Workspace }
 
@@ -456,7 +457,7 @@ func (t gitDiffTool) Execute(ctx context.Context, invocation agent.ToolInvocatio
 }
 
 func (t runCommandTool) Definition() agent.ToolDefinition {
-	return agent.ToolDefinition{Name: "run_command", Description: "Run an approved build, test, lint, format, or Git inspection command without a shell. Requires permission.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"program": map[string]any{"type": "string", "enum": []any{"go", "gofmt", "git", "npm", "pnpm", "yarn", "pytest", "ruff", "cargo", "rustfmt", "make"}}, "args": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "cwd": map[string]any{"type": "string"}, "timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 120}}, "required": []any{"program", "args"}}}
+	return agent.ToolDefinition{Name: "run_command", Description: "Run an approved build, test, lint, format, or read-only Git command without a shell. cwd must be relative to the workspace. Requires permission.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"program": map[string]any{"type": "string", "enum": []any{"go", "gofmt", "git", "npm", "pnpm", "yarn", "pytest", "ruff", "cargo", "rustfmt", "make"}}, "args": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "cwd": map[string]any{"type": "string", "description": "Relative directory inside the workspace; omit for the current workspace directory."}, "timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 120}}, "required": []any{"program", "args"}}}
 }
 func (runCommandTool) ReplayPolicy() agent.ReplayPolicy { return agent.ReplayPolicyNever }
 func (t runCommandTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
@@ -474,13 +475,39 @@ func (t runCommandTool) Execute(ctx context.Context, invocation agent.ToolInvoca
 	}
 	result, err := t.workspace.RunCommandIn(ctx, input.Program, input.Args, input.CWD, time.Duration(input.TimeoutSeconds)*time.Second)
 	if err != nil {
-		return agent.ToolResult{}, err
+		if ctx.Err() != nil {
+			return agent.ToolResult{}, ctx.Err()
+		}
+		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
 	}
 	data, err := marshalString(result)
 	if err != nil {
 		return agent.ToolResult{}, err
 	}
 	return agent.ToolResult{Content: data, IsError: result.ExitCode != 0}, nil
+}
+
+func (t gitCommitTool) Definition() agent.ToolDefinition {
+	return agent.ToolDefinition{Name: "git_commit", Description: "Stage exact relative workspace paths and create one non-amended Git commit. Rejects unrelated staged changes and never pushes. Use only when the user explicitly asks to commit.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"message": map[string]any{"type": "string", "minLength": 1, "maxLength": 200}, "paths": map[string]any{"type": "array", "minItems": 1, "maxItems": 100, "items": map[string]any{"type": "string"}}}, "required": []any{"message", "paths"}}}
+}
+func (gitCommitTool) ReplayPolicy() agent.ReplayPolicy { return agent.ReplayPolicyNever }
+func (t gitCommitTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
+	var input struct {
+		Message string   `json:"message"`
+		Paths   []string `json:"paths"`
+	}
+	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
+		return agent.ToolResult{}, err
+	}
+	result, err := t.workspace.GitCommit(ctx, input.Message, input.Paths)
+	if err != nil {
+		if ctx.Err() != nil {
+			return agent.ToolResult{}, ctx.Err()
+		}
+		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
+	}
+	data, err := marshalString(result)
+	return agent.ToolResult{Content: data}, err
 }
 
 func validateCommand(program string, args []string) error {
@@ -551,6 +578,7 @@ func registerTools(registry *agent.Registry, workspace *Workspace, weather Weath
 		{searchCodeTool{workspace: workspace}, "workspace.search"},
 		{gitStatusTool{workspace: workspace}, "workspace.read"},
 		{gitDiffTool{workspace: workspace}, "workspace.read"},
+		{gitCommitTool{workspace: workspace}, "workspace.commit"},
 		{writeFileTool{workspace: workspace}, "workspace.write"},
 		{editFileTool{workspace: workspace}, "workspace.write"},
 		{applyPatchTool{workspace: workspace}, "workspace.write"},
