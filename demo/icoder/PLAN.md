@@ -80,13 +80,13 @@
 
 任务：
 
-- 建立项目理解、单文件修复、多文件功能、编译错误、测试失败、重构、review 和新增测试等任务集。
+- [x] 建立项目理解、单文件修复、多文件功能、编译错误、测试失败、重构、review 和新增测试等任务集。
 - 记录任务完成率、修改文件、验证命令、工具次数、token、循环和安全违规。
-- 为每类任务提供确定性断言，而不是仅判断模型最终文本。
+- [x] 为任务提供确定性断言，而不是仅判断模型最终文本。
 
 验收：
 
-- 至少 10 个可重复运行的本地任务。
+- [x] 至少 10 个可重复运行的本地任务。
 - 每次能力变更可以输出前后结果。
 - workspace escape 和覆盖用户修改作为硬失败。
 
@@ -113,6 +113,8 @@
 - 最终结果准确列出修改文件和执行的检查。
 - M0 中 Go 中小型任务达到稳定可用水平。
 
+当前状态：M1 功能实现完成，任务级成功率将在 M0 eval harness 建立后持续量化。
+
 ### M2：项目理解和上下文
 
 目标：在较大仓库和较长会话中保持正确方向。
@@ -133,6 +135,8 @@
 - 长历史压缩后保留最新用户意图、关键事实和完整近期工具交换。
 - 进程重启后能够恢复 summary artifact 和任务状态。
 
+当前状态：持久化 context 主体完成；provider tokenizer 和动态 tool schema token 预算仍待实现。
+
 ### M3：可靠运行和事件
 
 目标：失败、取消和恢复后的状态可信。
@@ -147,6 +151,8 @@
 - 接入高级 tool executor 和 effect ledger，表达 unknown effect。
 
 依赖说明：高级 tool executor 的 approval blocker 必须与 M5 的 SessionAgent suspend/resume 一起接入。M3 保留同步 TUI permission wrapper 和可靠事件，不以普通 tool error 模拟 durable suspension。
+
+当前状态：进程内可靠事件和失败终态已完成；事务 outbox、effect unknown 和 durable resume 留待 M5 组合。
 
 验收：
 
@@ -173,6 +179,17 @@
 - reviewer 使用独立 context、预算和只读 tool set 输出真实 findings。
 - parent 只接收结构化结果，不复制 child 全量历史。
 - cancellation、depth、fanout 和预算限制生效。
+
+当前状态：同步 reviewer 已完成；explorer 和异步 spawn/suspend/wake/resume 在出现并行探索需求或进入 M5 时实现。
+
+## 5.1 下一阶段顺序
+
+1. 回补 M0 deterministic coding eval harness，建立功能成功率和安全回归基线。
+2. 根据 eval 结果完成 provider tokenizer、动态 tool schema budget 和 context diagnostics。
+3. 将进程内事件升级为事务 outbox，补齐 model step 和恢复投影。
+4. 设计并实现 root Agent 到高级 `tool.Executor` 的标准 bridge。
+5. 迁移到 RuntimeDefinition 和 context-aware SessionAgent AttemptRunner。
+6. 接入 durable suspension/resume、effect ledger 和异步 Sub-Agent wake。
 
 ### M5：完整参考应用
 
