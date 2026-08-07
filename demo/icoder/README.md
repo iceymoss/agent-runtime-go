@@ -9,7 +9,7 @@
 - 支持 slash command 自动补全、session picker、工具详情展开和 viewport 浏览。
 - `run` 非交互模式可用于脚本和 CI，支持 stdin 与 JSON 输出。
 - SQLite 持久化对话、usage 和 terminal events。
-- 文件 glob、正则搜索、带行号的范围读取、冲突安全的局部编辑、批量 patch 和全量写入。
+- 支持 ignore 规则的文件 glob/搜索、结构化范围读取、冲突安全的局部编辑、批量 patch 和全量写入。
 - 受限的 Go/Git 命令执行；写入和命令默认需要授权。
 - Skills、OpenAI-compatible provider 和 Streamable HTTP MCP。
 - Bash、Zsh、Fish 和 PowerShell completion。

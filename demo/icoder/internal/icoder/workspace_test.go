@@ -375,3 +375,79 @@ func TestWorkspaceCreateDirectoryRejectsSymlinkAndEscape(t *testing.T) {
 		t.Fatal("CreateDirectory() escaped the workspace")
 	}
 }
+
+func TestWorkspaceDiscoveryHonorsIgnoreFiles(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		".gitignore":        "ignored/\n*.log\n!important.log\n/root.txt\n",
+		".ignore":           "generated.txt\n",
+		"keep.go":           "package keep\n",
+		"ignored/hidden.go": "package hidden\n",
+		"debug.log":         "hidden token\n",
+		"important.log":     "visible token\n",
+		"root.txt":          "hidden token\n",
+		"generated.txt":     "hidden token\n",
+		"nested/root.txt":   "visible token\n",
+		".icoder.db":        "hidden token\n",
+	}
+	for name, content := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovered, err := workspace.ListFiles(context.Background(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	discoveredSet := make(map[string]bool, len(discovered))
+	for _, name := range discovered {
+		discoveredSet[name] = true
+	}
+	for _, expected := range []string{".gitignore", ".ignore", "important.log", "keep.go", "nested/root.txt"} {
+		if !discoveredSet[expected] {
+			t.Errorf("ListFiles() omitted %q: %v", expected, discovered)
+		}
+	}
+	for _, excluded := range []string{"ignored/hidden.go", "debug.log", "root.txt", "generated.txt", ".icoder.db"} {
+		if discoveredSet[excluded] {
+			t.Errorf("ListFiles() included %q: %v", excluded, discovered)
+		}
+	}
+	matches, err := workspace.Search(context.Background(), "token", 100)
+	if err != nil || len(matches) != 2 || matches[0].Path != "important.log" || matches[1].Path != "nested/root.txt" {
+		t.Fatalf("Search() = %#v, %v", matches, err)
+	}
+}
+
+func TestWorkspaceSearchSkipsBinaryLargeAndSymlinkFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "binary.dat"), []byte{'m', 'a', 't', 'c', 'h', 0}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "large.txt"), []byte(strings.Repeat("match", maxSearchFile)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("match\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "linked.txt")); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matches, err := workspace.Search(context.Background(), "match", 100)
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("Search() = %#v, %v", matches, err)
+	}
+}

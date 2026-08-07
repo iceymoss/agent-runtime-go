@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,7 +18,14 @@ import (
 	"unicode/utf8"
 )
 
-const maxToolOutput = 64 << 10
+const (
+	maxToolOutput = 64 << 10
+	maxSearchFile = 2 << 20
+)
+
+var defaultIgnoredDirectories = map[string]struct{}{
+	".git": {}, ".idea": {}, ".venv": {}, "node_modules": {}, "vendor": {},
+}
 
 type Workspace struct {
 	root string
@@ -69,6 +77,15 @@ type preparedPatch struct {
 	updated   []byte
 	mode      os.FileMode
 }
+
+type ignorePattern struct {
+	pattern   string
+	negated   bool
+	directory bool
+	rooted    bool
+}
+
+type ignoreMatcher struct{ patterns []ignorePattern }
 
 func NewWorkspace(root string) (*Workspace, error) {
 	real, err := filepath.EvalSymlinks(root)
@@ -195,8 +212,12 @@ func (w *Workspace) Glob(ctx context.Context, pattern string, limit int) ([]stri
 		limit = 200
 	}
 	base := w.WorkingDirectory()
+	ignored, err := w.loadIgnoreMatcher()
+	if err != nil {
+		return nil, err
+	}
 	var files []string
-	err := filepath.WalkDir(base, func(path string, entry os.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(base, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -204,9 +225,28 @@ func (w *Workspace) Glob(ctx context.Context, pattern string, limit int) ([]stri
 			return err
 		}
 		if entry.IsDir() {
-			if path != base && (entry.Name() == ".git" || entry.Name() == "node_modules") {
+			if path != base && isDefaultIgnoredDirectory(entry.Name()) {
 				return filepath.SkipDir
 			}
+			if path != base {
+				workspaceRelative, err := filepath.Rel(w.root, path)
+				if err != nil {
+					return err
+				}
+				if ignored.Match(filepath.ToSlash(workspaceRelative), true) {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		workspaceRelative, err := filepath.Rel(w.root, path)
+		if err != nil {
+			return err
+		}
+		if ignored.Match(filepath.ToSlash(workspaceRelative), false) {
 			return nil
 		}
 		relative, err := filepath.Rel(base, path)
@@ -246,7 +286,11 @@ func (w *Workspace) SearchPattern(ctx context.Context, pattern, include string, 
 	}
 	var matches []SearchMatch
 	base := w.WorkingDirectory()
-	err := filepath.WalkDir(base, func(path string, entry os.DirEntry, walkErr error) error {
+	ignored, err := w.loadIgnoreMatcher()
+	if err != nil {
+		return nil, err
+	}
+	err = filepath.WalkDir(base, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -254,9 +298,28 @@ func (w *Workspace) SearchPattern(ctx context.Context, pattern, include string, 
 			return err
 		}
 		if entry.IsDir() {
-			if path != base && (entry.Name() == ".git" || entry.Name() == "node_modules") {
+			if path != base && isDefaultIgnoredDirectory(entry.Name()) {
 				return filepath.SkipDir
 			}
+			if path != base {
+				workspaceRelative, err := filepath.Rel(w.root, path)
+				if err != nil {
+					return err
+				}
+				if ignored.Match(filepath.ToSlash(workspaceRelative), true) {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		workspaceRelative, err := filepath.Rel(w.root, path)
+		if err != nil {
+			return err
+		}
+		if ignored.Match(filepath.ToSlash(workspaceRelative), false) {
 			return nil
 		}
 		relative, err := filepath.Rel(base, path)
@@ -295,7 +358,11 @@ func (w *Workspace) ListFiles(ctx context.Context, limit int) ([]string, error) 
 	}
 	files := make([]string, 0, limit)
 	base := w.WorkingDirectory()
-	err := filepath.WalkDir(base, func(path string, entry os.DirEntry, walkErr error) error {
+	ignored, err := w.loadIgnoreMatcher()
+	if err != nil {
+		return nil, err
+	}
+	err = filepath.WalkDir(base, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -303,9 +370,28 @@ func (w *Workspace) ListFiles(ctx context.Context, limit int) ([]string, error) 
 			return err
 		}
 		if entry.IsDir() {
-			if path != base && (entry.Name() == ".git" || entry.Name() == "node_modules") {
+			if path != base && isDefaultIgnoredDirectory(entry.Name()) {
 				return filepath.SkipDir
 			}
+			if path != base {
+				workspaceRelative, err := filepath.Rel(w.root, path)
+				if err != nil {
+					return err
+				}
+				if ignored.Match(filepath.ToSlash(workspaceRelative), true) {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		workspaceRelative, err := filepath.Rel(w.root, path)
+		if err != nil {
+			return err
+		}
+		if ignored.Match(filepath.ToSlash(workspaceRelative), false) {
 			return nil
 		}
 		relative, err := filepath.Rel(base, path)
@@ -352,6 +438,10 @@ func searchFile(path, root, pattern string, limit int) (matches []SearchMatch, r
 }
 
 func searchFilePattern(path, root, pattern string, expression *regexp.Regexp, limit int) (matches []SearchMatch, resultErr error) {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxSearchFile {
+		return nil, nil
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, nil
@@ -359,6 +449,18 @@ func searchFilePattern(path, root, pattern string, expression *regexp.Regexp, li
 	defer func() {
 		resultErr = errors.Join(resultErr, file.Close())
 	}()
+	probe := make([]byte, 8192)
+	read, readErr := file.Read(probe)
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return nil, readErr
+	}
+	probe = probe[:read]
+	if !utf8.Valid(probe) || strings.IndexByte(string(probe), 0) >= 0 {
+		return nil, nil
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 4096), 1<<20)
 	for line := 1; scanner.Scan(); line++ {
@@ -726,6 +828,95 @@ func rollbackPatch(applied []preparedPatch) error {
 		}
 	}
 	return result
+}
+
+func (w *Workspace) loadIgnoreMatcher() (ignoreMatcher, error) {
+	matcher := ignoreMatcher{patterns: []ignorePattern{
+		{pattern: ".icoder.db*"},
+	}}
+	for _, name := range []string{".gitignore", ".ignore"} {
+		data, err := os.ReadFile(filepath.Join(w.root, name))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return ignoreMatcher{}, err
+		}
+		if !utf8.Valid(data) {
+			return ignoreMatcher{}, fmt.Errorf("%s is not valid UTF-8", name)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			pattern := ignorePattern{}
+			if strings.HasPrefix(line, "!") {
+				pattern.negated = true
+				line = strings.TrimPrefix(line, "!")
+			}
+			pattern.rooted = strings.HasPrefix(line, "/")
+			line = strings.TrimPrefix(line, "/")
+			pattern.directory = strings.HasSuffix(line, "/")
+			line = strings.TrimSuffix(line, "/")
+			if line == "" {
+				continue
+			}
+			pattern.pattern = filepath.ToSlash(filepath.Clean(line))
+			matcher.patterns = append(matcher.patterns, pattern)
+		}
+	}
+	return matcher, nil
+}
+
+func (m ignoreMatcher) Match(name string, directory bool) bool {
+	name = strings.TrimPrefix(filepath.ToSlash(filepath.Clean(name)), "./")
+	ignored := false
+	for _, pattern := range m.patterns {
+		if ignorePatternMatches(pattern, name, directory) {
+			ignored = !pattern.negated
+		}
+	}
+	return ignored
+}
+
+func ignorePatternMatches(pattern ignorePattern, name string, directory bool) bool {
+	if pattern.directory {
+		for candidate := name; candidate != "." && candidate != ""; candidate = pathDirectory(candidate) {
+			if ignorePathMatches(pattern, candidate) {
+				return true
+			}
+		}
+		return directory && ignorePathMatches(pattern, name)
+	}
+	return ignorePathMatches(pattern, name)
+}
+
+func ignorePathMatches(pattern ignorePattern, name string) bool {
+	if pattern.rooted || strings.Contains(pattern.pattern, "/") {
+		matched, err := globMatch(pattern.pattern, name)
+		return err == nil && matched
+	}
+	for _, component := range strings.Split(name, "/") {
+		matched, err := filepath.Match(pattern.pattern, component)
+		if err == nil && matched {
+			return true
+		}
+	}
+	return false
+}
+
+func pathDirectory(name string) string {
+	index := strings.LastIndex(name, "/")
+	if index < 0 {
+		return ""
+	}
+	return name[:index]
+}
+
+func isDefaultIgnoredDirectory(name string) bool {
+	_, ignored := defaultIgnoredDirectories[name]
+	return ignored
 }
 
 func (w *Workspace) resolveExisting(name string) (string, error) {
