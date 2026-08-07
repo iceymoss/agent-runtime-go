@@ -98,7 +98,7 @@ func NewApp(ctx context.Context, config Config) (app *App, resultErr error) {
 		}
 	}()
 
-	model := openaicompat.New(config.BaseURL, config.APIKey)
+	model := newRetryModel(openaicompat.New(config.BaseURL, config.APIKey))
 	if _, err := buildProviderCatalog(config, model.Capabilities()); err != nil {
 		return nil, err
 	}
