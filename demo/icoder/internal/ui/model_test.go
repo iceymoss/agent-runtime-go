@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -202,5 +203,48 @@ func TestNarrowApprovalStacksActions(t *testing.T) {
 	}
 	if lipgloss.Width(view) > model.contentWidth() || choicesLine < 0 || hintLine <= choicesLine+2 || !strings.Contains(view, "2. Yes, allow safe commands") || !strings.Contains(view, "for this session") || !strings.Contains(view, "3. No") {
 		t.Fatalf("approval width=%d contentWidth=%d view=%q", lipgloss.Width(view), model.contentWidth(), view)
+	}
+}
+
+func TestContentColumnCapsAndCentersOnWideTerminal(t *testing.T) {
+	model := Model{width: 180}
+	view := model.columnView("content")
+	wantGutter := (180 - 100) / 2
+	if model.contentWidth() != 100 || !strings.HasPrefix(view, strings.Repeat(" ", wantGutter)) || lipgloss.Width(view) != wantGutter+100 {
+		t.Fatalf("contentWidth=%d renderedWidth=%d view=%q", model.contentWidth(), lipgloss.Width(view), view)
+	}
+}
+
+func TestApprovalFooterShrinksTranscriptToTerminalHeight(t *testing.T) {
+	model := New(context.Background(), nil, nil)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	model = updated.(Model)
+	model.pending = &approvalEvent{prompt: icoder.ApprovalPrompt{ToolName: "create_directory", Action: "workspace.write", Resource: "/workspace", Input: `{"path":"src"}`}}
+	footer := model.footerView()
+	transcript := model.transcriptView(footer)
+	want := max(3, model.height-lipgloss.Height(footer)-3)
+	if lipgloss.Height(transcript) != want || lipgloss.Height(model.View()) > model.height {
+		t.Fatalf("footer=%d transcript=%d want=%d view=%d", lipgloss.Height(footer), lipgloss.Height(transcript), want, lipgloss.Height(model.View()))
+	}
+}
+
+func TestEmptyTranscriptShowsTaskPrompt(t *testing.T) {
+	model := New(context.Background(), nil, nil)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+	view := model.View()
+	if !strings.Contains(view, "What would you like to build?") || !strings.Contains(view, "Describe a task") {
+		t.Fatalf("view = %q", view)
+	}
+}
+
+func TestSessionPickerKeepsSelectionVisibleInShortTerminal(t *testing.T) {
+	model := Model{width: 80, height: 14, sessionPicker: true, sessionIndex: 8}
+	for index := range 12 {
+		model.sessions = append(model.sessions, icoder.SessionInfo{ID: fmt.Sprintf("session-%02d", index)})
+	}
+	view := model.sessionPickerView()
+	if !strings.Contains(view, "session-08") || !strings.Contains(view, "earlier") || !strings.Contains(view, "later") || lipgloss.Height(view) > model.height-2 {
+		t.Fatalf("picker height=%d view=%q", lipgloss.Height(view), view)
 	}
 }

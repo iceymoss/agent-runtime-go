@@ -142,8 +142,8 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.viewport.Width, m.viewport.Height = max(20, msg.Width-4), max(5, msg.Height-10)
-		m.input.SetWidth(max(20, msg.Width-6))
+		m.viewport.Width, m.viewport.Height = m.contentWidth(), max(3, msg.Height-8)
+		m.input.SetWidth(max(16, m.contentWidth()-8))
 		m.syncViewport(true)
 	case tea.KeyMsg:
 		if m.sessionPicker {
@@ -365,29 +365,58 @@ func (m Model) View() string {
 		return ""
 	}
 	header := m.headerView()
-	body := m.viewport.View()
 	if m.sessionPicker {
-		return header + "\n\n" + m.sessionPickerView() + "\n\n" + dimStyle.Render("  up/down select   enter open   n new   esc close")
+		content := header + "\n\n" + m.sessionPickerView() + "\n\n" + dimStyle.Render("  up/down select   enter open   n new   esc close")
+		return m.columnView(content)
 	}
+	footer := m.footerView()
+	body := m.transcriptView(footer)
+	return m.columnView(header + "\n\n" + body + "\n" + footer)
+}
+
+func (m Model) footerView() string {
 	if m.pending != nil {
-		return header + "\n\n" + body + "\n\n" + m.approvalView() + "\n" + m.statusView()
+		return m.approvalView() + "\n" + m.statusView()
 	}
 	composer := m.composerView()
 	if m.running {
 		composer = m.runningView()
 	}
-	view := header + "\n\n" + body + "\n\n" + composer
+	view := composer
 	if suggestions := m.commandSuggestions(); len(suggestions) > 0 {
 		view += "\n" + m.suggestionView(suggestions)
 	}
 	return view + "\n" + m.statusView()
 }
 
+func (m Model) transcriptView(footer string) string {
+	viewport := m.viewport
+	viewport.Width = m.contentWidth()
+	height := m.height
+	if height <= 0 {
+		height = 24
+	}
+	viewport.Height = max(3, height-lipgloss.Height(footer)-3)
+	if len(m.items) == 0 && strings.TrimSpace(m.streamed) == "" {
+		viewport.SetContent(m.emptyView())
+	}
+	return viewport.View()
+}
+
+func (m Model) emptyView() string {
+	return "\n" + agentStyle.Render("What would you like to build?") + "\n" + dimStyle.Render("Describe a task, ask about the codebase, or type / for commands.")
+}
+
+func (m Model) columnView(content string) string {
+	gutter := max(0, (m.width-m.contentWidth())/2)
+	return lipgloss.NewStyle().Width(m.contentWidth()).MarginLeft(gutter).Render(content)
+}
+
 func (m Model) contentWidth() int {
 	if m.width <= 0 {
 		return 76
 	}
-	return max(20, m.width-2)
+	return min(100, max(20, m.width-4))
 }
 
 func (m Model) headerView() string {
@@ -822,16 +851,34 @@ func (m Model) suggestionView(values []struct{ name, description string }) strin
 
 func (m Model) sessionPickerView() string {
 	lines := []string{agentStyle.Render("Sessions"), ""}
-	for i, session := range m.sessions {
+	visible := max(1, m.height-10)
+	if m.height <= 0 {
+		visible = 10
+	}
+	start := max(0, m.sessionIndex-visible/2)
+	end := min(len(m.sessions), start+visible)
+	start = max(0, end-visible)
+	if start > 0 {
+		lines = append(lines, dimStyle.Render(fmt.Sprintf("  ... %d earlier", start)))
+	}
+	currentSession := ""
+	if m.app != nil {
+		currentSession = m.app.SessionID()
+	}
+	for i := start; i < end; i++ {
+		session := m.sessions[i]
 		cursor := "  "
 		if i == m.sessionIndex {
 			cursor = "> "
 		}
 		marker := " "
-		if session.ID == m.app.SessionID() {
+		if session.ID == currentSession {
 			marker = "*"
 		}
 		lines = append(lines, fmt.Sprintf("%s%s %-20s  %4d messages  %s", cursor, marker, session.ID, session.Messages, session.UpdatedAt))
+	}
+	if end < len(m.sessions) {
+		lines = append(lines, dimStyle.Render(fmt.Sprintf("  ... %d later", len(m.sessions)-end)))
 	}
 	if len(m.sessions) == 0 {
 		lines = append(lines, lipgloss.NewStyle().Foreground(muted).Render("No persisted sessions. Press n to create one."))
