@@ -271,13 +271,14 @@ func TestAgentRegistryPreservesToolResultAndFatalCause(t *testing.T) {
 	})
 }
 
-func TestAgentRegistryRejectsApprovalSuspension(t *testing.T) {
+func TestAgentRegistryProjectsApprovalSuspension(t *testing.T) {
 	implementation := newBridgeTool()
 	authorizer := &testPermission{decision: permission.DecisionAsk}
 	generation, executor := newBridgeExecutor(t, implementation, authorizer, nil)
 	_, err := getBridgeTool(t, newBridgeRegistry(t, generation, executor, bridgeResolver(nil))).Execute(context.Background(), bridgeInvocation())
-	if !errors.Is(err, lifecycle.ErrAgentBridgeSuspensionUnsupported) || !errors.Is(err, lifecycle.ErrApprovalPending) {
-		t.Fatalf("Execute() error = %v, want unsupported suspension retaining approval error", err)
+	suspension, ok := agent.AsToolSuspension(err)
+	if !ok || !errors.Is(err, lifecycle.ErrApprovalPending) || suspension.Kind != agent.ToolSuspensionApproval || suspension.RequestRef == "" || suspension.ResumeToken == "" || suspension.Revision != 1 {
+		t.Fatalf("Execute() error = %v, suspension = %#v, want approval suspension", err, suspension)
 	}
 	if implementation.calls.Load() != 0 {
 		t.Fatalf("approval-blocked tool calls = %d, want 0", implementation.calls.Load())

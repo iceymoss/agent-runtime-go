@@ -23,7 +23,7 @@ type Interceptor interface {
 }
 ```
 
-The current bridge requires `ResolveInvocation` to provide stable tenant/run/attempt/fence/resource/policy identity. It is intended for non-durable execution or execution that does not require approval suspension. If the Executor returns an approval blocker, the bridge returns `ErrAgentBridgeSuspensionUnsupported`; it does not disguise the blocker as a normal tool result before the root durable suspension/resume contract exists.
+The bridge requires `ResolveInvocation` to provide stable tenant/run/attempt/fence/resource/policy identity. An ordinary root Agent can project an approval blocker as `OutcomeSuspended`, `StopReasonToolSuspended`, and a `RunResult.Suspension` that contains no raw input. Durable approval checkpoint/resume and effect-ledger ownership are not complete yet, so ordinary suspension must not be treated as a durable recovery guarantee.
 
 Core data flow: the caller supplies `InvocationIdentity` (tenant, run, attempt, call, raw input, and other identity data). `Executor` canonicalizes the input as `CanonicalInput`, computes its digest, and freezes it as an immutable `PreparedExecution`. Its `ExecutionKey` is derived deterministically from identity + input digest + generation digest. The same logical call therefore has the same `ExecutionKey` across every retry, which is the basis of idempotency.
 

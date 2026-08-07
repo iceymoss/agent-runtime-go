@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,6 +11,34 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
+
+type ToolSuspensionKind string
+
+const ToolSuspensionApproval ToolSuspensionKind = "approval"
+
+type ToolSuspension struct {
+	Kind         ToolSuspensionKind `json:"kind"`
+	ExecutionKey string             `json:"execution_key,omitempty"`
+	RequestRef   string             `json:"request_ref,omitempty"`
+	ResumeToken  string             `json:"resume_token,omitempty"`
+	Revision     uint64             `json:"revision,omitempty"`
+}
+
+type ToolSuspensionError struct {
+	Suspension ToolSuspension
+	Cause      error
+}
+
+func (e *ToolSuspensionError) Error() string { return "agent: tool execution suspended" }
+func (e *ToolSuspensionError) Unwrap() error { return e.Cause }
+
+func AsToolSuspension(err error) (ToolSuspension, bool) {
+	var suspended *ToolSuspensionError
+	if !errors.As(err, &suspended) || suspended == nil {
+		return ToolSuspension{}, false
+	}
+	return suspended.Suspension, true
+}
 
 // ToolDefinition is the tool declaration sent to the model.
 type ToolDefinition struct {

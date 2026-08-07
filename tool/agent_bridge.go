@@ -69,7 +69,7 @@ func (t *agentExecutorTool) Execute(ctx context.Context, invocation agent.ToolIn
 	}
 	executed, err := t.executor.Execute(ctx, request)
 	if executed.Blocker != nil {
-		return agent.ToolResult{}, lifecycleError(ErrAgentBridgeSuspensionUnsupported, err, "agent bridge execute", executed.Prepared.ExecutionKey, "approval blocker requires durable suspension support")
+		return agent.ToolResult{}, &agent.ToolSuspensionError{Suspension: agent.ToolSuspension{Kind: agent.ToolSuspensionApproval, ExecutionKey: executed.Prepared.ExecutionKey, RequestRef: string(executed.Blocker.RequestRef), ResumeToken: string(executed.Blocker.ResumeToken), Revision: executed.Blocker.Revision}, Cause: err}
 	}
 	if err != nil {
 		return agent.ToolResult{}, err

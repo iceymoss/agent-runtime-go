@@ -23,7 +23,7 @@ type Interceptor interface {
 }
 ```
 
-当前 bridge 要求调用方通过 `ResolveInvocation` 提供稳定的 tenant/run/attempt/fence/resource/policy 身份，适用于 non-durable 或不需要审批 suspension 的执行。若 Executor 返回 approval blocker，bridge 会返回 `ErrAgentBridgeSuspensionUnsupported`；在 root durable suspension/resume contract 完成前，它不会把 blocker 伪装成普通工具结果。
+当前 bridge 要求调用方通过 `ResolveInvocation` 提供稳定的 tenant/run/attempt/fence/resource/policy 身份。普通 root Agent 可以把 approval blocker 返回为 `OutcomeSuspended`、`StopReasonToolSuspended` 和不含原始输入的 `RunResult.Suspension`；durable approval 的 checkpoint/resume 与 effect-ledger ownership 尚未完成，因此不能把普通 suspension 当作 durable 恢复承诺。
 
 核心数据流：调用方提供 `InvocationIdentity`（租户、run、attempt、call、原始输入等身份信息），`Executor` 将输入规范化为 `CanonicalInput` 并计算摘要，冻结为不可变的 `PreparedExecution`，其中 `ExecutionKey` 由身份 + 输入摘要 + 代次摘要确定性推导——同一次逻辑调用无论重试多少次，`ExecutionKey` 都相同，这是幂等的基础。
 

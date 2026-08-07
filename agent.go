@@ -130,7 +130,8 @@ type RunResult struct {
 	// ModelName is the model actually used.
 	ModelName string `json:"model_name,omitempty"`
 	// Outcome distinguishes complete answers, resumable interruption, and failure.
-	Outcome Outcome `json:"outcome"`
+	Outcome    Outcome        `json:"outcome"`
+	Suspension *RunSuspension `json:"suspension,omitempty"`
 	// DurableCompletion authorizes the domain owner to atomically finalize a
 	// completed durable run with its own records. It is nil for ordinary runs.
 	DurableCompletion *DurableCompletion `json:"-"`
@@ -139,6 +140,11 @@ type RunResult struct {
 	DurableFailure    *DurableFailure    `json:"-"`
 	DurableSuspension *DurableSuspension `json:"-"`
 	DurableFence      uint64             `json:"-"`
+}
+
+type RunSuspension struct {
+	Reason StopReason      `json:"reason"`
+	Tool   *ToolSuspension `json:"tool,omitempty"`
 }
 
 // DurableCompletion is returned after the accepted terminal response has been
@@ -262,6 +268,8 @@ const (
 	StopReasonContextBudget StopReason = "context_budget"
 	// StopReasonOutputLimit indicates the provider reached its generation limit.
 	StopReasonOutputLimit StopReason = "output_limit"
+	// StopReasonToolSuspended indicates that a tool is waiting on an external blocker.
+	StopReasonToolSuspended StopReason = "tool_suspended"
 )
 
 // Run executes a runtime request. Observations are best-effort and never
@@ -337,6 +345,15 @@ func (a *Agent) Run(ctx context.Context, request RunRequest) (result *RunResult,
 		results, stopTurn, invalidCount, err := a.execTools(ctx, next.toolSet, stepResult.ToolCalls, repairErrors, observer)
 		repairErrors += invalidCount
 		stepResult.ToolResults = results
+		if suspension, ok := AsToolSuspension(err); ok {
+			result.Text = resp.Message.Text()
+			result.Steps = append(result.Steps, stepResult)
+			result.StopReason = StopReasonToolSuspended
+			result.Outcome = OutcomeSuspended
+			result.Suspension = &RunSuspension{Reason: StopReasonToolSuspended, Tool: &suspension}
+			observer.emit(Observation{Type: ObservationStepFinished, Step: &stepResult})
+			return result, nil
+		}
 
 		toolMsg := NewToolMessage(results...)
 		history = append(history, toolMsg)
@@ -884,6 +901,9 @@ func (a *Agent) execOne(ctx context.Context, toolSet *ToolSet, call ToolCall, ex
 
 	res, err := tool.Execute(ctx, ToolInvocation{CallID: call.ID, Name: call.Name, RawInput: call.Input, ExecutionKey: executionKey})
 	if err != nil {
+		if _, ok := AsToolSuspension(err); ok {
+			return ToolResult{}, false, err
+		}
 		return ToolResult{}, false, fmt.Errorf("execute tool %q: %w", call.Name, err)
 	}
 	// Fill in pairing metadata so tool implementations do not have to.
