@@ -119,6 +119,8 @@ icoder version                 显示版本
 | `git_diff` | 查看 unstaged/staged diff | allow |
 | `edit_file` | 精确局部替换，支持 digest 冲突检查 | ask |
 | `apply_patch` | 批量创建、精确更新和删除文件，支持预检与失败回滚 | ask |
+| `move_file` | 在 workspace 内移动文件，不覆盖已有目标 | ask |
+| `create_directory` | 创建目录，可选择创建缺失的父目录 | ask |
 | `write_file` | 创建或完整替换文件 | ask |
 | `run_command` | 执行受限 Go/Git 命令 | ask |
 | `get_weather` | Open-Meteo 只读网络请求 | allow |

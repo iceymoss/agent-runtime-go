@@ -119,7 +119,7 @@ func TestAppRunsToolLoopAndCommitsTurn(t *testing.T) {
 	mu.Lock()
 	gotRequests := append([]wireChatRequest(nil), requests...)
 	mu.Unlock()
-	if len(gotRequests) != 2 || len(gotRequests[0].Tools) != 13 {
+	if len(gotRequests) != 2 || len(gotRequests[0].Tools) != 15 {
 		t.Fatalf("provider requests = %#v", gotRequests)
 	}
 	second := gotRequests[1]

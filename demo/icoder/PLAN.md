@@ -98,7 +98,7 @@
 
 - [x] 基础文件读取、搜索、精确编辑和整文件写入。
 - [x] 批量 `apply_patch`，支持 create/update/delete、digest 校验、预检和失败回滚。
-- [ ] 增加 move 和显式目录创建能力。
+- [x] 增加 move 和显式目录创建能力。
 - [ ] 统一 `read_file` 的行号、digest、总行数和 truncation 返回。
 - [ ] 支持 `.gitignore`/`.ignore`、二进制和大文件过滤。
 - [ ] 扩展直接 argv 命令 profile，覆盖 Go、Node、Python 和 Rust。

@@ -237,6 +237,50 @@ type editFileTool struct{ workspace *Workspace }
 
 type applyPatchTool struct{ workspace *Workspace }
 
+type moveFileTool struct{ workspace *Workspace }
+
+func (t moveFileTool) Definition() agent.ToolDefinition {
+	return agent.ToolDefinition{Name: "move_file", Description: "Move one regular file to a new path inside the workspace without overwriting the destination.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"source": map[string]any{"type": "string"}, "destination": map[string]any{"type": "string"}, "expected_digest": map[string]any{"type": "string"}}, "required": []any{"source", "destination"}}}
+}
+
+func (moveFileTool) ReplayPolicy() agent.ReplayPolicy { return agent.ReplayPolicyNever }
+func (t moveFileTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
+	var input struct {
+		Source         string `json:"source"`
+		Destination    string `json:"destination"`
+		ExpectedDigest string `json:"expected_digest"`
+	}
+	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
+		return agent.ToolResult{}, err
+	}
+	if err := t.workspace.MoveFile(ctx, input.Source, input.Destination, input.ExpectedDigest); err != nil {
+		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
+	}
+	return agent.ToolResult{Content: fmt.Sprintf(`{"source":%q,"destination":%q}`, input.Source, input.Destination)}, nil
+}
+
+type createDirectoryTool struct{ workspace *Workspace }
+
+func (t createDirectoryTool) Definition() agent.ToolDefinition {
+	return agent.ToolDefinition{Name: "create_directory", Description: "Create a directory inside the workspace, optionally including missing parent directories.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "parents": map[string]any{"type": "boolean"}}, "required": []any{"path"}}}
+}
+
+func (createDirectoryTool) ReplayPolicy() agent.ReplayPolicy { return agent.ReplayPolicyIdempotent }
+func (t createDirectoryTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
+	var input struct {
+		Path    string `json:"path"`
+		Parents bool   `json:"parents"`
+	}
+	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
+		return agent.ToolResult{}, err
+	}
+	path, err := t.workspace.CreateDirectory(ctx, input.Path, input.Parents)
+	if err != nil {
+		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
+	}
+	return agent.ToolResult{Content: fmt.Sprintf(`{"path":%q}`, path)}, nil
+}
+
 func (t applyPatchTool) Definition() agent.ToolDefinition {
 	operation := map[string]any{"type": "object", "properties": map[string]any{
 		"operation":       map[string]any{"type": "string", "enum": []any{"create", "update", "delete"}},
@@ -418,6 +462,8 @@ func registerTools(registry *agent.Registry, workspace *Workspace, weather Weath
 		{writeFileTool{workspace: workspace}, "workspace.write"},
 		{editFileTool{workspace: workspace}, "workspace.write"},
 		{applyPatchTool{workspace: workspace}, "workspace.write"},
+		{moveFileTool{workspace: workspace}, "workspace.write"},
+		{createDirectoryTool{workspace: workspace}, "workspace.write"},
 		{runCommandTool{workspace: workspace}, "workspace.command"},
 		{weatherTool{provider: weather}, "network.read"},
 	}

@@ -237,3 +237,86 @@ func TestWorkspaceApplyPatchRejectsUnsafeOperations(t *testing.T) {
 		t.Fatalf("existing file = %q, %v", current, err)
 	}
 }
+
+func TestWorkspaceMoveFileAndCreateDirectory(t *testing.T) {
+	root := t.TempDir()
+	content := []byte("package source\n")
+	if err := os.WriteFile(filepath.Join(root, "source.go"), content, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory, err := workspace.CreateDirectory(context.Background(), "pkg/nested", true)
+	if err != nil || directory != "pkg/nested" {
+		t.Fatalf("CreateDirectory() = %q, %v", directory, err)
+	}
+	if err := workspace.MoveFile(context.Background(), "source.go", "pkg/nested/destination.go", digest(content)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "source.go")); !os.IsNotExist(err) {
+		t.Fatalf("source stat error = %v", err)
+	}
+	moved, err := os.ReadFile(filepath.Join(root, "pkg", "nested", "destination.go"))
+	if err != nil || string(moved) != string(content) {
+		t.Fatalf("moved file = %q, %v", moved, err)
+	}
+	info, err := os.Stat(filepath.Join(root, "pkg", "nested", "destination.go"))
+	if err != nil || info.Mode().Perm() != 0o640 {
+		t.Fatalf("moved mode = %v, %v", info.Mode().Perm(), err)
+	}
+}
+
+func TestWorkspaceMoveFileRejectsUnsafeChanges(t *testing.T) {
+	root := t.TempDir()
+	content := []byte("source\n")
+	if err := os.WriteFile(filepath.Join(root, "source.txt"), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "destination.txt"), []byte("destination\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name        string
+		source      string
+		destination string
+		digest      string
+	}{
+		{name: "stale digest", source: "source.txt", destination: "renamed.txt", digest: digest([]byte("stale"))},
+		{name: "existing destination", source: "source.txt", destination: "destination.txt", digest: digest(content)},
+		{name: "workspace escape", source: "source.txt", destination: "../outside.txt", digest: digest(content)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := workspace.MoveFile(context.Background(), test.source, test.destination, test.digest); err == nil {
+				t.Fatal("MoveFile() accepted an unsafe change")
+			}
+		})
+	}
+	current, err := os.ReadFile(filepath.Join(root, "source.txt"))
+	if err != nil || string(current) != string(content) {
+		t.Fatalf("source file = %q, %v", current, err)
+	}
+}
+
+func TestWorkspaceCreateDirectoryRejectsSymlinkAndEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workspace.CreateDirectory(context.Background(), "linked/nested", true); err == nil {
+		t.Fatal("CreateDirectory() traversed a symbolic link")
+	}
+	if _, err := workspace.CreateDirectory(context.Background(), "../outside", true); err == nil {
+		t.Fatal("CreateDirectory() escaped the workspace")
+	}
+}

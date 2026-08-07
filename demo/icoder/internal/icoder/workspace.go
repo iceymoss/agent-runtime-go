@@ -427,6 +427,103 @@ func (w *Workspace) WriteFile(ctx context.Context, name, content, expectedDigest
 	return digest([]byte(content)), nil
 }
 
+func (w *Workspace) MoveFile(ctx context.Context, source, destination, expectedDigest string) error {
+	sourcePath, err := w.resolveForWrite(source)
+	if err != nil {
+		return err
+	}
+	info, err := os.Lstat(sourcePath)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("source must be a regular file")
+	}
+	destinationPath, err := w.resolveForWrite(destination)
+	if err != nil {
+		return err
+	}
+	if sourcePath == destinationPath {
+		return fmt.Errorf("source and destination must be different")
+	}
+	if _, err := os.Lstat(destinationPath); err == nil {
+		return fmt.Errorf("destination already exists")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return err
+	}
+	if expectedDigest != "" && digest(data) != expectedDigest {
+		return fmt.Errorf("file changed: expected %s, got %s", expectedDigest, digest(data))
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return os.Rename(sourcePath, destinationPath)
+}
+
+func (w *Workspace) CreateDirectory(ctx context.Context, name string, parents bool) (string, error) {
+	if name == "" || filepath.IsAbs(name) {
+		return "", fmt.Errorf("a relative directory path is required")
+	}
+	path := filepath.Clean(filepath.Join(w.WorkingDirectory(), filepath.Clean(name)))
+	if !within(w.root, path) || path == w.root {
+		return "", fmt.Errorf("directory must be inside the workspace")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if parents {
+		if err := w.createDirectories(path); err != nil {
+			return "", err
+		}
+	} else if err := os.Mkdir(path, 0o755); err != nil && !os.IsExist(err) {
+		return "", err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("path is not a regular directory")
+	}
+	relative, err := filepath.Rel(w.root, path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.ToSlash(relative), nil
+}
+
+func (w *Workspace) createDirectories(path string) error {
+	relative, err := filepath.Rel(w.root, path)
+	if err != nil {
+		return err
+	}
+	current := w.root
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			if err := os.Mkdir(current, 0o755); err != nil && !os.IsExist(err) {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path component %q is not a regular directory", component)
+		}
+	}
+	return nil
+}
+
 func (w *Workspace) ApplyPatch(ctx context.Context, operations []PatchOperation) ([]PatchResult, error) {
 	if len(operations) == 0 {
 		return nil, fmt.Errorf("at least one patch operation is required")
