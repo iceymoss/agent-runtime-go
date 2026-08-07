@@ -3,6 +3,7 @@ package icoder
 import (
 	"context"
 	"strings"
+	"time"
 )
 
 type ApprovalDecision string
@@ -13,10 +14,11 @@ const (
 )
 
 type ApprovalPrompt struct {
-	ToolName string
-	Action   string
-	Resource string
-	Input    string
+	ToolName  string
+	Action    string
+	Resource  string
+	Input     string
+	ExpiresAt time.Time
 }
 
 type ApprovalFunc func(context.Context, ApprovalPrompt) (ApprovalDecision, error)

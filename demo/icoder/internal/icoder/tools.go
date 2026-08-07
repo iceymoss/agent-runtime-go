@@ -3,6 +3,7 @@ package icoder
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -13,11 +14,13 @@ import (
 const policyVersion permission.PolicyVersion = "icoder-policy-v1"
 
 type authorizedTool struct {
-	tool       agent.Tool
-	permission permission.Service
-	action     string
-	resource   func(string) permission.Resource
-	sessionID  func() string
+	tool        agent.Tool
+	permission  permission.Service
+	action      string
+	resource    func(string) permission.Resource
+	sessionID   func() string
+	now         func() time.Time
+	approvalTTL time.Duration
 }
 
 func (t *authorizedTool) Definition() agent.ToolDefinition { return t.tool.Definition() }
@@ -42,7 +45,7 @@ func (t *authorizedTool) Execute(ctx context.Context, invocation agent.ToolInvoc
 		ExecutionRef: permission.ExecutionRef(requestKey), FenceToken: 1,
 		ToolCallID: invocation.CallID, ToolName: invocation.Name, Action: t.action,
 		InputDigest: inputDigest, ToolGeneration: "icoder-tools-v1", DefinitionDigest: "icoder-v1",
-		PolicyVersion: policyVersion, ApprovalExpiresAt: time.Now().Add(15 * time.Minute),
+		PolicyVersion: policyVersion, ApprovalExpiresAt: t.approvalExpiresAt(),
 	}
 	decision, err := t.permission.Check(ctx, check)
 	if err != nil {
@@ -62,6 +65,18 @@ func (t *authorizedTool) Execute(ctx context.Context, invocation agent.ToolInvoc
 	default:
 		return agent.ToolResult{IsError: true, StopTurn: true, Content: "permission denied: " + decision.ReasonCode}, nil
 	}
+}
+
+func (t *authorizedTool) approvalExpiresAt() time.Time {
+	now := time.Now
+	if t.now != nil {
+		now = t.now
+	}
+	ttl := t.approvalTTL
+	if ttl <= 0 {
+		ttl = 15 * time.Minute
+	}
+	return now().Add(ttl)
 }
 
 func (t *authorizedTool) executeAndRecord(ctx context.Context, invocation agent.ToolInvocation, run runContext) (agent.ToolResult, error) {
@@ -84,7 +99,7 @@ func (t *authorizedTool) askAndExecute(ctx context.Context, invocation agent.Too
 	if approve == nil || result.Approval == nil || result.Blocker == nil {
 		return agent.ToolResult{IsError: true, StopTurn: true, Content: "permission denied: interactive approval is unavailable"}, nil
 	}
-	choice, err := approve(ctx, ApprovalPrompt{ToolName: invocation.Name, Action: t.action, Resource: check.Resource.Key, Input: approvalInput(invocation.RawInput)})
+	choice, err := approve(ctx, ApprovalPrompt{ToolName: invocation.Name, Action: t.action, Resource: check.Resource.Key, Input: approvalInput(invocation.RawInput), ExpiresAt: check.ApprovalExpiresAt})
 	if err != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer cancel()
@@ -101,6 +116,9 @@ func (t *authorizedTool) askAndExecute(ctx context.Context, invocation agent.Too
 	commandKey := string(check.RequestKey) + ":" + string(kind)
 	_, _, err = t.permission.Resolve(ctx, permission.ResolveCommand{TenantKey: check.Subject.TenantKey, RequestKey: check.RequestKey, CommandKey: commandKey, DecisionKey: permission.DecisionKey(commandKey), ApproverKey: "cli-user", ExpectedRevision: result.Approval.Request.Revision, Kind: kind, ReasonCode: reason})
 	if err != nil {
+		if terminal, ok := approvalTerminalResult(err); ok {
+			return terminal, nil
+		}
 		return agent.ToolResult{}, err
 	}
 	run := currentRunContext(ctx)
@@ -112,6 +130,9 @@ func (t *authorizedTool) askAndExecute(ctx context.Context, invocation agent.Too
 	}
 	revalidated, err := t.permission.Revalidate(ctx, permission.RevalidateCommand{TenantKey: check.Subject.TenantKey, RequestKey: check.RequestKey, ResumeToken: result.Blocker.ResumeToken, AttemptRef: check.AttemptRef, FenceToken: check.FenceToken, InputDigest: check.InputDigest, PolicyVersion: check.PolicyVersion, ToolGeneration: check.ToolGeneration})
 	if err != nil {
+		if terminal, ok := approvalTerminalResult(err); ok {
+			return terminal, nil
+		}
 		return agent.ToolResult{}, err
 	}
 	if revalidated.Decision != permission.DecisionAllow {
@@ -124,6 +145,21 @@ func (t *authorizedTool) askAndExecute(ctx context.Context, invocation agent.Too
 		return agent.ToolResult{}, err
 	}
 	return t.executeAndRecord(ctx, invocation, run)
+}
+
+func approvalTerminalResult(err error) (agent.ToolResult, bool) {
+	message := ""
+	switch {
+	case errors.Is(err, permission.ErrRequestExpired), errors.Is(err, permission.ErrGrantExpired):
+		message = "Approval expired before it was confirmed. Run the task again to request a new approval."
+	case errors.Is(err, permission.ErrRequestCanceled):
+		message = "Approval was canceled. Run the task again if you still want to continue."
+	case errors.Is(err, permission.ErrPermissionDenied):
+		message = "Permission was denied. The requested action was not performed."
+	default:
+		return agent.ToolResult{}, false
+	}
+	return agent.ToolResult{IsError: true, StopTurn: true, Content: message}, true
 }
 
 func recordRunFact(ctx context.Context, run runContext, suffix, eventType string, payload any) error {

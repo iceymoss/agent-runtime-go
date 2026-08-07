@@ -2,8 +2,10 @@ package icoder
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iceymoss/agent-runtime-go"
 	"github.com/iceymoss/agent-runtime-go/permission"
@@ -87,6 +89,40 @@ func TestAuthorizedToolDoesNotExecuteAfterRejection(t *testing.T) {
 		t.Fatalf("result = %#v, calls = %d, error = %v", result, inner.calls, err)
 	}
 }
+
+func TestAuthorizedToolReturnsActionableResultWhenApprovalExpires(t *testing.T) {
+	clock := &toolTestClock{now: time.Date(2026, 8, 7, 8, 0, 0, 0, time.UTC)}
+	policy := permission.PolicyFunc{PolicyVersion: policyVersion, EvaluateFunc: func(_ context.Context, request permission.CheckRequest, _ []permission.Grant) (permission.CheckResult, error) {
+		return permission.CheckResult{Decision: permission.DecisionAsk, PolicyVersion: request.PolicyVersion, InputDigest: request.InputDigest}, nil
+	}}
+	service, err := permission.NewService(permission.ServiceOptions{Policy: policy, Store: permission.NewMemoryStore(clock), Clock: clock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := &fixedTool{}
+	tool := &authorizedTool{tool: inner, permission: service, action: "workspace.write", sessionID: func() string { return "session" }, resource: func(string) permission.Resource { return permission.Resource{Kind: "file", Key: "file.go"} }, now: clock.Now, approvalTTL: time.Minute}
+	ctx := withRunContext(context.Background(), "run-expired", "session", func(_ context.Context, prompt ApprovalPrompt) (ApprovalDecision, error) {
+		if !prompt.ExpiresAt.Equal(clock.now.Add(time.Minute)) {
+			t.Fatalf("ExpiresAt = %v", prompt.ExpiresAt)
+		}
+		clock.now = clock.now.Add(2 * time.Minute)
+		return ApprovalApproveOnce, nil
+	}, nil)
+	result, err := tool.Execute(ctx, agent.ToolInvocation{CallID: "call-1", Name: "write_file", RawInput: `{}`})
+	if err != nil || !result.IsError || !result.StopTurn || !strings.Contains(result.Content, "Approval expired") || inner.calls != 0 {
+		t.Fatalf("result=%#v error=%v calls=%d", result, err, inner.calls)
+	}
+}
+
+func TestApprovalTerminalResultRejectsInfrastructureErrors(t *testing.T) {
+	if _, ok := approvalTerminalResult(errors.New("database unavailable")); ok {
+		t.Fatal("infrastructure error was converted to a tool result")
+	}
+}
+
+type toolTestClock struct{ now time.Time }
+
+func (c *toolTestClock) Now() time.Time { return c.now }
 
 func TestAuthorizedToolAllowsWriteFlag(t *testing.T) {
 	service, err := NewPermissionService(true)

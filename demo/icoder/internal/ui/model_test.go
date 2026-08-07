@@ -48,8 +48,8 @@ func TestModelAnswersApproval(t *testing.T) {
 	model := Model{running: true, events: make(chan runEvent, 1), pending: &approvalEvent{respond: response}}
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	model = updated.(Model)
-	if model.pending != nil {
-		t.Fatal("approval remained pending")
+	if model.pending == nil || !model.pending.submitted {
+		t.Fatal("approval did not enter submitted state")
 	}
 	select {
 	case decision := <-response:
@@ -58,6 +58,30 @@ func TestModelAnswersApproval(t *testing.T) {
 		}
 	default:
 		t.Fatal("approval response was not sent")
+	}
+}
+
+func TestModelDoesNotBufferTaskInputWhileRunning(t *testing.T) {
+	model := New(context.Background(), nil, nil)
+	model.running = true
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = updated.(Model)
+	if model.input.Value() != "" {
+		t.Fatalf("running input = %q, want empty", model.input.Value())
+	}
+}
+
+func TestModelDoesNotRouteSubmittedApprovalToTaskInput(t *testing.T) {
+	response := make(chan icoder.ApprovalDecision, 1)
+	model := New(context.Background(), nil, nil)
+	model.running = true
+	model.pending = &approvalEvent{respond: response}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = updated.(Model)
+	if model.input.Value() != "" || model.pending == nil || !model.pending.submitted {
+		t.Fatalf("input=%q pending=%#v", model.input.Value(), model.pending)
 	}
 }
 

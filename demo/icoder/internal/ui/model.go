@@ -51,8 +51,9 @@ type transcriptItem struct {
 }
 
 type approvalEvent struct {
-	prompt  icoder.ApprovalPrompt
-	respond chan icoder.ApprovalDecision
+	prompt    icoder.ApprovalPrompt
+	respond   chan icoder.ApprovalDecision
+	submitted bool
 }
 
 type runEvent struct {
@@ -163,6 +164,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.pending != nil {
+			if m.pending.submitted {
+				if msg.String() == "ctrl+c" {
+					m.cancelRun()
+				}
+				return m, nil
+			}
 			switch msg.String() {
 			case "y", "1", "enter":
 				m.answerApproval(icoder.ApprovalApproveOnce)
@@ -308,8 +315,10 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(message)
-	commands = append(commands, cmd)
+	if !m.running && !m.sessionPicker {
+		m.input, cmd = m.input.Update(message)
+		commands = append(commands, cmd)
+	}
 	m.viewport, cmd = m.viewport.Update(message)
 	commands = append(commands, cmd)
 	if m.viewport.AtBottom() {
@@ -332,7 +341,11 @@ func (m Model) View() string {
 	if m.pending != nil {
 		return header + meta + "\n" + separator + "\n" + body + "\n" + m.approvalView() + "\n" + separator + "\n" + m.statusView()
 	}
-	view := header + meta + "\n" + separator + "\n" + body + "\n" + separator + "\n" + m.input.View()
+	composer := m.input.View()
+	if m.running {
+		composer = lipgloss.NewStyle().Foreground(muted).Render("  Task is running. Input unlocks when this run finishes.")
+	}
+	view := header + meta + "\n" + separator + "\n" + body + "\n" + separator + "\n" + composer
 	if suggestions := m.commandSuggestions(); len(suggestions) > 0 {
 		view += "\n" + m.suggestionView(suggestions)
 	}
@@ -486,8 +499,8 @@ func (m Model) toolIndex(id string) int {
 }
 func (m *Model) answerApproval(decision icoder.ApprovalDecision) {
 	event := m.pending
-	m.pending = nil
 	if event != nil {
+		event.submitted = true
 		select {
 		case event.respond <- decision:
 		default:
@@ -495,7 +508,7 @@ func (m *Model) answerApproval(decision icoder.ApprovalDecision) {
 			}
 		}
 	}
-	m.latestStatus = "approval submitted"
+	m.latestStatus = "checking approval"
 }
 func (m *Model) cancelRun() {
 	if m.cancel != nil {
@@ -507,10 +520,21 @@ func (m *Model) cancelRun() {
 
 func (m Model) approvalView() string {
 	p := m.pending.prompt
-	return "\n" + errorStyle.Bold(true).Render("Permission required") + "\n" + toolStyle.Render(p.ToolName) + "  " + p.Action + "\nResource: " + p.Resource + "\n" + truncate(prettyJSON(p.Input), 3000) + "\n\n" + success.Render("[y/1/Enter] allow once") + "  " + errorStyle.Render("[n/2/Esc] reject") + "  [Ctrl+C] cancel run"
+	expires := ""
+	if !p.ExpiresAt.IsZero() {
+		expires = "\nExpires: " + p.ExpiresAt.Local().Format("15:04:05")
+	}
+	actions := success.Render("[y/1/Enter] allow once") + "  " + errorStyle.Render("[n/2/Esc] reject") + "  [Ctrl+C] cancel run"
+	if m.pending.submitted {
+		actions = m.spinner.View() + " Checking approval status...  [Ctrl+C] cancel run"
+	}
+	return "\n" + errorStyle.Bold(true).Render("Permission required") + "\n" + toolStyle.Render(p.ToolName) + "  " + p.Action + "\nResource: " + p.Resource + expires + "\n" + truncate(prettyJSON(p.Input), 3000) + "\n\n" + actions
 }
 func (m Model) statusView() string {
 	if m.pending != nil {
+		if m.pending.submitted {
+			return toolStyle.Render("checking approval; task input is locked")
+		}
 		return errorStyle.Render("waiting for approval")
 	}
 	if m.running {
