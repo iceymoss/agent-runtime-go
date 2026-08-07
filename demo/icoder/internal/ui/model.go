@@ -68,13 +68,14 @@ type runEvent struct {
 }
 
 type commandResult struct {
-	text          string
-	history       []agent.Message
-	sessions      []icoder.SessionInfo
-	showSessions  bool
-	replace       bool
-	toggleDetails bool
-	err           error
+	text           string
+	history        []agent.Message
+	sessions       []icoder.SessionInfo
+	showSessions   bool
+	replace        bool
+	toggleDetails  bool
+	clearApprovals bool
+	err            error
 }
 
 type Model struct {
@@ -95,7 +96,7 @@ type Model struct {
 	follow        bool
 	pending       *approvalEvent
 	approvalIndex int
-	autoApprove   bool
+	autoScopes    map[string]bool
 	started       time.Time
 	latestStatus  string
 	commandIndex  int
@@ -116,6 +117,7 @@ var slashCommands = []struct{ name, description string }{
 	{"/details", "toggle expanded tool input and output"},
 	{"/diff", "show the current workspace diff"},
 	{"/status", "show session and runtime status"},
+	{"/permissions [clear]", "show or clear automatic approval scopes"},
 	{"/quit", "exit iCoder"},
 }
 
@@ -128,7 +130,7 @@ func New(ctx context.Context, app *icoder.App, history []agent.Message) Model {
 	input.KeyMap.InsertNewline.SetKeys("alt+enter", "ctrl+j")
 	spin := spinner.New()
 	spin.Spinner, spin.Style = spinner.Dot, lipgloss.NewStyle().Foreground(accent)
-	m := Model{app: app, ctx: ctx, input: input, spinner: spin, events: make(chan runEvent, 128), follow: true}
+	m := Model{app: app, ctx: ctx, input: input, spinner: spin, events: make(chan runEvent, 128), follow: true, autoScopes: make(map[string]bool)}
 	m.loadHistory(history)
 	return m
 }
@@ -177,18 +179,29 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			switch msg.String() {
-			case "tab", "right", "l":
+			case "tab":
+				if m.approvalIndex == 1 {
+					m.approvalIndex = 0
+				} else {
+					m.approvalIndex = 1
+				}
+				return m, nil
+			case "right", "down", "l", "j":
 				m.approvalIndex = (m.approvalIndex + 1) % 3
 				return m, nil
-			case "shift+tab", "left", "h":
+			case "shift+tab", "left", "up", "h", "k":
 				m.approvalIndex = (m.approvalIndex + 2) % 3
 				return m, nil
 			case "y", "1":
 				m.approvalIndex = 0
 				m.confirmApproval()
 				return m, waitEvent(m.events)
-			case "n", "2", "esc":
+			case "2":
 				m.approvalIndex = 1
+				m.confirmApproval()
+				return m, waitEvent(m.events)
+			case "n", "3", "esc":
+				m.approvalIndex = 2
 				m.confirmApproval()
 				return m, waitEvent(m.events)
 			case "enter":
@@ -221,16 +234,6 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.details = !m.details
 			m.syncViewport(false)
 			return m, nil
-		case "tab":
-			if !m.running {
-				m.autoApprove = !m.autoApprove
-				if m.autoApprove {
-					m.latestStatus = "AUTO approvals enabled"
-				} else {
-					m.latestStatus = "manual approvals enabled"
-				}
-				return m, nil
-			}
 		case "ctrl+p":
 			if !m.running {
 				m.input.SetValue("/")
@@ -307,6 +310,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamed = ""
 		m.syncViewport(true)
 	case commandResult:
+		if msg.clearApprovals {
+			m.clearCurrentApprovalScopes()
+		}
 		if msg.err != nil {
 			m.items = append(m.items, transcriptItem{kind: itemSystem, state: stateError, title: "command failed", content: msg.err.Error()})
 		} else if msg.replace {
@@ -581,10 +587,10 @@ func (m *Model) answerApproval(decision icoder.ApprovalDecision) {
 func (m *Model) confirmApproval() {
 	switch m.approvalIndex {
 	case 1:
-		m.answerApproval(icoder.ApprovalDeny)
-	case 2:
-		m.autoApprove = true
+		m.grantAutoScope(m.pending.prompt.Action)
 		m.answerApproval(icoder.ApprovalApproveAuto)
+	case 2:
+		m.answerApproval(icoder.ApprovalDeny)
 	default:
 		m.answerApproval(icoder.ApprovalApproveOnce)
 	}
@@ -609,7 +615,7 @@ func (m Model) approvalView() string {
 	}
 	meta := toolStyle.Render(p.ToolName) + "  " + dimStyle.Render(p.Action)
 	details := approvalDetails(p, panelWidth)
-	actions := approvalActions(panelWidth, m.approvalIndex)
+	actions := approvalActions(panelWidth, m.approvalIndex, approvalScopeLabel(p.Action))
 	if m.pending.submitted {
 		actions = warningStyle.Render(m.spinner.View()+" Checking approval status") + "    " + dimStyle.Render("ctrl+c  cancel")
 	}
@@ -652,11 +658,11 @@ func fieldLine(label, value string, width int) string {
 	return prefix + truncateLine(value, max(4, width-labelWidth))
 }
 
-func approvalActions(width, selected int) string {
+func approvalActions(width, selected int, scope string) string {
 	choices := []struct {
 		label string
 		style lipgloss.Style
-	}{{"Yes", success}, {"No", errorStyle}, {"Auto", warningStyle}}
+	}{{"1. Yes", success}, {"2. Yes, " + scope, warningStyle}, {"3. No", errorStyle}}
 	values := make([]string, len(choices))
 	for index, choice := range choices {
 		label := "  " + choice.label + "  "
@@ -666,12 +672,89 @@ func approvalActions(width, selected int) string {
 			values[index] = choice.style.Render(label)
 		}
 	}
-	hint := dimStyle.Render("tab select  enter confirm")
+	hint := dimStyle.Render("tab auto  up/down select  enter confirm")
 	if width < 48 {
-		return strings.Join(values, " ") + "\n" + hint
+		hint = dimStyle.Render("tab auto  enter confirm")
 	}
-	return strings.Join(values, "  ") + "    " + hint
+	return strings.Join(values, "\n") + "\n\n" + hint
 }
+
+func approvalScopeLabel(action string) string {
+	switch action {
+	case "workspace.write":
+		return "allow workspace writes for this session"
+	case "workspace.command":
+		return "allow safe commands for this session"
+	case "network.read":
+		return "allow network reads for this session"
+	case "network.tool":
+		return "allow network tools for this session"
+	default:
+		return "allow " + action + " for this session"
+	}
+}
+
+func approvalScopeName(action string) string {
+	switch action {
+	case "workspace.write":
+		return "writes"
+	case "workspace.command":
+		return "commands"
+	case "network.read":
+		return "network"
+	case "network.tool":
+		return "network tools"
+	default:
+		return action
+	}
+}
+
+func (m Model) approvalScopeKey(action string) string {
+	session := ""
+	if m.app != nil {
+		session = m.app.SessionID()
+	}
+	return session + "\x00" + action
+}
+
+func (m Model) hasAutoScope(action string) bool {
+	return m.autoScopes[m.approvalScopeKey(action)]
+}
+
+func (m *Model) grantAutoScope(action string) {
+	if m.autoScopes == nil {
+		m.autoScopes = make(map[string]bool)
+	}
+	m.autoScopes[m.approvalScopeKey(action)] = true
+}
+
+func (m *Model) clearCurrentApprovalScopes() {
+	prefix := "\x00"
+	if m.app != nil {
+		prefix = m.app.SessionID() + "\x00"
+	}
+	for key := range m.autoScopes {
+		if strings.HasPrefix(key, prefix) {
+			delete(m.autoScopes, key)
+		}
+	}
+}
+
+func (m Model) currentApprovalScopes() []string {
+	prefix := "\x00"
+	if m.app != nil {
+		prefix = m.app.SessionID() + "\x00"
+	}
+	var scopes []string
+	for key := range m.autoScopes {
+		if strings.HasPrefix(key, prefix) {
+			scopes = append(scopes, approvalScopeName(strings.TrimPrefix(key, prefix)))
+		}
+	}
+	sort.Strings(scopes)
+	return scopes
+}
+
 func (m Model) statusView() string {
 	left, right := "", ""
 	if m.pending != nil {
@@ -688,12 +771,12 @@ func (m Model) statusView() string {
 		if status == "" {
 			status = "ready"
 		}
-		if m.autoApprove {
-			left = warningStyle.Bold(true).Render("AUTO approvals") + "  " + dimStyle.Render(status)
+		if scopes := m.currentApprovalScopes(); len(scopes) > 0 {
+			left = warningStyle.Bold(true).Render("AUTO "+strings.Join(scopes, ", ")) + "  " + dimStyle.Render(status)
 		} else {
 			left = dimStyle.Render(status)
 		}
-		right = dimStyle.Render("enter send   tab auto   ctrl+p commands")
+		right = dimStyle.Render("enter send   ctrl+p commands   /permissions")
 	}
 	if lipgloss.Width(left)+lipgloss.Width(right)+2 > m.contentWidth() {
 		return " " + left
@@ -759,9 +842,13 @@ func (m Model) sessionPickerView() string {
 func (m Model) startRun(ctx context.Context, prompt string) tea.Cmd {
 	return func() tea.Msg {
 		go func() {
-			autoApprove := m.autoApprove
+			autoScopes := make(map[string]bool, len(m.autoScopes))
+			for key, allowed := range m.autoScopes {
+				autoScopes[key] = allowed
+			}
 			approve := func(ctx context.Context, prompt icoder.ApprovalPrompt) (icoder.ApprovalDecision, error) {
-				if autoApprove {
+				key := m.approvalScopeKey(prompt.Action)
+				if autoScopes[key] {
 					return icoder.ApprovalApproveAuto, nil
 				}
 				response := make(chan icoder.ApprovalDecision, 1)
@@ -773,7 +860,7 @@ func (m Model) startRun(ctx context.Context, prompt string) tea.Cmd {
 				select {
 				case decision := <-response:
 					if decision == icoder.ApprovalApproveAuto {
-						autoApprove = true
+						autoScopes[key] = true
 					}
 					return decision, nil
 				case <-ctx.Done():
@@ -800,7 +887,7 @@ func (m Model) slashCommand(line string) tea.Cmd {
 	return func() tea.Msg {
 		switch name {
 		case "help", "?":
-			return commandResult{text: "Ctrl+P commands | Ctrl+L sessions | Ctrl+O tool details | PgUp/PgDn scroll | Esc cancel\n/new [id] /use <id> /sessions /clear /pwd /cd <path> /tools /details /diff /status /quit"}
+			return commandResult{text: "Ctrl+P commands | Ctrl+L sessions | Ctrl+O tool details | PgUp/PgDn scroll | Esc cancel\n/new [id] /use <id> /sessions /clear /pwd /cd <path> /tools /details /diff /status /permissions [clear] /quit"}
 		case "quit", "exit", "q":
 			return tea.Quit()
 		case "pwd":
@@ -818,6 +905,18 @@ func (m Model) slashCommand(line string) tea.Cmd {
 			return commandResult{text: value, err: err}
 		case "status":
 			return commandResult{text: fmt.Sprintf("session: %s\ncwd: %s\ntools: %d\nrun: idle", m.app.SessionID(), m.app.WorkingDirectory(), len(m.app.Tools()))}
+		case "permissions":
+			if argument == "clear" {
+				return commandResult{text: "automatic approval scopes cleared for " + m.app.SessionID(), clearApprovals: true}
+			}
+			if argument != "" {
+				return commandResult{err: fmt.Errorf("usage: /permissions [clear]")}
+			}
+			scopes := m.currentApprovalScopes()
+			if len(scopes) == 0 {
+				return commandResult{text: "No automatic approval scopes for " + m.app.SessionID() + "."}
+			}
+			return commandResult{text: "Automatic approval scopes for " + m.app.SessionID() + ":\n- " + strings.Join(scopes, "\n- ")}
 		case "use":
 			if err := m.app.UseSession(m.ctx, argument); err != nil {
 				return commandResult{err: err}

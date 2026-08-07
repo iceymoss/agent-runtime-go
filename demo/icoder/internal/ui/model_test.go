@@ -67,18 +67,16 @@ func TestModelSelectsAutoApprovalWithTab(t *testing.T) {
 	response := make(chan icoder.ApprovalDecision, 1)
 	model := New(context.Background(), nil, nil)
 	model.running = true
-	model.pending = &approvalEvent{respond: response}
-	for range 2 {
-		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyTab})
-		model = updated.(Model)
-	}
-	if model.approvalIndex != 2 {
+	model.pending = &approvalEvent{respond: response, prompt: icoder.ApprovalPrompt{Action: "workspace.write"}}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(Model)
+	if model.approvalIndex != 1 {
 		t.Fatalf("approvalIndex = %d, want Auto", model.approvalIndex)
 	}
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(Model)
-	if !model.autoApprove || model.pending == nil || !model.pending.submitted {
-		t.Fatalf("autoApprove=%v pending=%#v", model.autoApprove, model.pending)
+	if !model.hasAutoScope("workspace.write") || model.pending == nil || !model.pending.submitted {
+		t.Fatalf("scopes=%v pending=%#v", model.currentApprovalScopes(), model.pending)
 	}
 	select {
 	case decision := <-response:
@@ -90,17 +88,15 @@ func TestModelSelectsAutoApprovalWithTab(t *testing.T) {
 	}
 }
 
-func TestModelTogglesAutoApprovalWhileIdle(t *testing.T) {
+func TestModelAutoApprovalScopesAreActionSpecific(t *testing.T) {
 	model := New(context.Background(), nil, nil)
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyTab})
-	model = updated.(Model)
-	if !model.autoApprove || !strings.Contains(model.statusView(), "AUTO approvals") {
-		t.Fatalf("autoApprove=%v status=%q", model.autoApprove, model.statusView())
+	model.grantAutoScope("workspace.write")
+	if !model.hasAutoScope("workspace.write") || model.hasAutoScope("workspace.command") || !strings.Contains(model.statusView(), "AUTO writes") {
+		t.Fatalf("scopes=%v status=%q", model.currentApprovalScopes(), model.statusView())
 	}
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
-	model = updated.(Model)
-	if model.autoApprove {
-		t.Fatal("auto approval remained enabled")
+	model.clearCurrentApprovalScopes()
+	if len(model.currentApprovalScopes()) != 0 {
+		t.Fatalf("scopes after clear = %v", model.currentApprovalScopes())
 	}
 }
 
@@ -193,18 +189,18 @@ func TestApprovalViewCapsWidthAndSummarizesTarget(t *testing.T) {
 }
 
 func TestNarrowApprovalStacksActions(t *testing.T) {
-	model := Model{width: 40, pending: &approvalEvent{prompt: icoder.ApprovalPrompt{ToolName: "run_command", Action: "command.execute", Resource: "workspace", Input: `{}`}}}
+	model := Model{width: 40, pending: &approvalEvent{prompt: icoder.ApprovalPrompt{ToolName: "run_command", Action: "workspace.command", Resource: "workspace", Input: `{}`}}}
 	view := model.approvalView()
 	choicesLine, hintLine := -1, -1
 	for index, line := range strings.Split(view, "\n") {
-		if strings.Contains(line, "Yes") && strings.Contains(line, "No") && strings.Contains(line, "Auto") {
+		if strings.Contains(line, "1. Yes") {
 			choicesLine = index
 		}
-		if strings.Contains(line, "tab select") {
+		if strings.Contains(line, "tab auto") {
 			hintLine = index
 		}
 	}
-	if lipgloss.Width(view) > model.contentWidth() || choicesLine < 0 || hintLine != choicesLine+1 {
+	if lipgloss.Width(view) > model.contentWidth() || choicesLine < 0 || hintLine <= choicesLine+2 || !strings.Contains(view, "2. Yes, allow safe commands") || !strings.Contains(view, "for this session") || !strings.Contains(view, "3. No") {
 		t.Fatalf("approval width=%d contentWidth=%d view=%q", lipgloss.Width(view), model.contentWidth(), view)
 	}
 }

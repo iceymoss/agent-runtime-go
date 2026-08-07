@@ -53,6 +53,7 @@ API key 只从环境变量读取，不提供 CLI flag，避免进入 shell histo
 | `Ctrl+L` | 打开 session picker |
 | `Ctrl+O` | 展开或折叠工具输入输出 |
 | `PageUp` / `PageDown` | 浏览 transcript |
+| `Tab` | 审批时在单次允许和 scoped AUTO 间切换 |
 
 TUI slash commands：
 
@@ -137,7 +138,7 @@ icoder version                 显示版本
 | `get_weather` | Open-Meteo 只读网络请求 | allow |
 | `delegate_review` | 演示 Sub-Agent 生命周期 | allow |
 
-默认情况下，TUI 会在写入或执行命令前显示 `Yes / No / Auto` 审批选择器。使用 `Tab` 或左右方向键切换，`Enter` 确认；`y` 和 `n` 可直接选择 Yes 或 No。`Auto` 会批准当前调用，并在当前 iCoder 进程的后续审批中自动允许；状态栏会持续显示 `AUTO approvals`，空闲时按 `Tab` 可恢复手动审批。批准结果绑定 tool call、输入 digest 和当前 run，并在执行前重新验证。审批默认有效 15 分钟，面板会显示到期时间；确认后进入验证状态并锁定任务输入，避免确认键被误作下一条消息。若审批已过期，工具不会执行，当前 turn 会记录明确的失败结果；重新提交原任务即可生成新的审批请求。
+默认情况下，TUI 会在写入或执行命令前显示三项审批列表：`1. Yes`、`2. Yes, allow <具体范围> for this session` 和 `3. No`。使用上下方向键遍历，`Tab` 在单次允许和 scoped AUTO 间快速切换，`Enter` 确认；`1`、`2`、`3` 可直接确认对应选项，`y` 和 `n` 是 Yes/No 快捷键。scoped AUTO 只允许当前 session 中同一类 action，例如 workspace writes 不会同时放开 commands 或 network；状态栏会持续显示已启用的 `AUTO writes`、`AUTO commands` 等范围。使用 `/permissions` 查看当前 session 的范围，`/permissions clear` 撤销。每个自动批准的调用仍绑定 tool call、输入 digest 和当前 run，并执行 Resolve/Revalidate。审批默认有效 15 分钟，确认后进入验证状态并锁定任务输入。若审批已过期，工具不会执行；重新提交原任务即可生成新的审批请求。
 
 非交互 `run` 不会从 stdin 隐式询问审批，默认安全拒绝副作用。确认工作区可信后，可以为当前进程开启所有本地写入和受限命令：
 
