@@ -173,6 +173,8 @@ const enSidebar: DefaultTheme.Sidebar = [
 
 export default withMermaid(
   defineConfig({
+    // GitHub Pages serves the site under /agent-runtime-go/; local builds stay at /.
+    base: process.env.DOCS_BASE || "/",
     title: "Agent Runtime for Go",
     titleTemplate: ":title | Agent Runtime for Go",
     srcDir: "../docs",
