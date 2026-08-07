@@ -44,6 +44,30 @@ type FileContent struct {
 	Digest    string `json:"digest"`
 }
 
+type PatchOperation struct {
+	Operation      string `json:"operation"`
+	Path           string `json:"path"`
+	Content        string `json:"content,omitempty"`
+	OldText        string `json:"old_text,omitempty"`
+	NewText        string `json:"new_text,omitempty"`
+	ExpectedDigest string `json:"expected_digest,omitempty"`
+	ReplaceAll     bool   `json:"replace_all,omitempty"`
+}
+
+type PatchResult struct {
+	Operation string `json:"operation"`
+	Path      string `json:"path"`
+	Digest    string `json:"digest,omitempty"`
+}
+
+type preparedPatch struct {
+	operation PatchOperation
+	path      string
+	original  []byte
+	updated   []byte
+	mode      os.FileMode
+}
+
 func NewWorkspace(root string) (*Workspace, error) {
 	real, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -401,6 +425,199 @@ func (w *Workspace) WriteFile(ctx context.Context, name, content, expectedDigest
 		return "", err
 	}
 	return digest([]byte(content)), nil
+}
+
+func (w *Workspace) ApplyPatch(ctx context.Context, operations []PatchOperation) ([]PatchResult, error) {
+	if len(operations) == 0 {
+		return nil, fmt.Errorf("at least one patch operation is required")
+	}
+	if len(operations) > 100 {
+		return nil, fmt.Errorf("at most 100 patch operations are allowed")
+	}
+	prepared := make([]preparedPatch, 0, len(operations))
+	seen := make(map[string]struct{}, len(operations))
+	for index, operation := range operations {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		item, err := w.preparePatch(operation)
+		if err != nil {
+			return nil, fmt.Errorf("operation %d (%s %q): %w", index+1, operation.Operation, operation.Path, err)
+		}
+		if _, exists := seen[item.path]; exists {
+			return nil, fmt.Errorf("operation %d (%s %q): path is modified more than once", index+1, operation.Operation, operation.Path)
+		}
+		seen[item.path] = struct{}{}
+		prepared = append(prepared, item)
+	}
+
+	applied := 0
+	for index, item := range prepared {
+		if err := ctx.Err(); err != nil {
+			return nil, errors.Join(err, rollbackPatch(prepared[:applied]))
+		}
+		if err := validatePreparedPatch(item); err != nil {
+			return nil, errors.Join(fmt.Errorf("operation %d (%s %q): %w", index+1, item.operation.Operation, item.operation.Path, err), rollbackPatch(prepared[:applied]))
+		}
+		var err error
+		if item.operation.Operation == "delete" {
+			err = os.Remove(item.path)
+		} else {
+			err = atomicWriteFile(item.path, item.updated, item.mode)
+		}
+		if err != nil {
+			return nil, errors.Join(fmt.Errorf("operation %d (%s %q): %w", index+1, item.operation.Operation, item.operation.Path, err), rollbackPatch(prepared[:applied]))
+		}
+		applied++
+	}
+
+	results := make([]PatchResult, 0, len(prepared))
+	for _, item := range prepared {
+		result := PatchResult{Operation: item.operation.Operation, Path: item.operation.Path}
+		if item.operation.Operation != "delete" {
+			result.Digest = digest(item.updated)
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func validatePreparedPatch(item preparedPatch) error {
+	current, err := os.ReadFile(item.path)
+	if item.operation.Operation == "create" {
+		if err == nil {
+			return fmt.Errorf("file appeared after patch validation")
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("file changed after patch validation: %w", err)
+	}
+	if digest(current) != digest(item.original) {
+		return fmt.Errorf("file changed after patch validation")
+	}
+	return nil
+}
+
+func (w *Workspace) preparePatch(operation PatchOperation) (preparedPatch, error) {
+	if operation.Path == "" {
+		return preparedPatch{}, fmt.Errorf("path is required")
+	}
+	path, err := w.resolveForWrite(operation.Path)
+	if err != nil {
+		return preparedPatch{}, err
+	}
+	info, statErr := os.Lstat(path)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return preparedPatch{}, statErr
+	}
+	if statErr == nil && !info.Mode().IsRegular() {
+		return preparedPatch{}, fmt.Errorf("path must be a regular file")
+	}
+	if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return preparedPatch{}, fmt.Errorf("symbolic links are not supported")
+	}
+
+	item := preparedPatch{operation: operation, path: path, mode: 0o644}
+	switch operation.Operation {
+	case "create":
+		if statErr == nil {
+			return preparedPatch{}, fmt.Errorf("file already exists")
+		}
+		item.updated = []byte(operation.Content)
+	case "update":
+		if os.IsNotExist(statErr) {
+			return preparedPatch{}, fmt.Errorf("file does not exist")
+		}
+		item.original, err = os.ReadFile(path)
+		if err != nil {
+			return preparedPatch{}, err
+		}
+		item.mode = info.Mode().Perm()
+		if operation.ExpectedDigest != "" && digest(item.original) != operation.ExpectedDigest {
+			return preparedPatch{}, fmt.Errorf("file changed: expected %s, got %s", operation.ExpectedDigest, digest(item.original))
+		}
+		if operation.OldText == "" {
+			return preparedPatch{}, fmt.Errorf("old_text is required for update")
+		}
+		count := strings.Count(string(item.original), operation.OldText)
+		if count == 0 {
+			return preparedPatch{}, fmt.Errorf("old_text was not found")
+		}
+		if count > 1 && !operation.ReplaceAll {
+			return preparedPatch{}, fmt.Errorf("old_text matched %d times; provide more context or set replace_all", count)
+		}
+		limit := 1
+		if operation.ReplaceAll {
+			limit = -1
+		}
+		item.updated = []byte(strings.Replace(string(item.original), operation.OldText, operation.NewText, limit))
+	case "delete":
+		if os.IsNotExist(statErr) {
+			return preparedPatch{}, fmt.Errorf("file does not exist")
+		}
+		item.original, err = os.ReadFile(path)
+		if err != nil {
+			return preparedPatch{}, err
+		}
+		item.mode = info.Mode().Perm()
+		if operation.ExpectedDigest != "" && digest(item.original) != operation.ExpectedDigest {
+			return preparedPatch{}, fmt.Errorf("file changed: expected %s, got %s", operation.ExpectedDigest, digest(item.original))
+		}
+	default:
+		return preparedPatch{}, fmt.Errorf("operation must be create, update, or delete")
+	}
+	return item, nil
+}
+
+func atomicWriteFile(path string, content []byte, mode os.FileMode) (resultErr error) {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".icoder-patch-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() {
+		if temporary != nil {
+			resultErr = errors.Join(resultErr, temporary.Close())
+		}
+		if removeErr := os.Remove(temporaryPath); removeErr != nil && !os.IsNotExist(removeErr) {
+			resultErr = errors.Join(resultErr, removeErr)
+		}
+	}()
+	if err := temporary.Chmod(mode); err != nil {
+		return err
+	}
+	if _, err := temporary.Write(content); err != nil {
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	temporary = nil
+	return os.Rename(temporaryPath, path)
+}
+
+func rollbackPatch(applied []preparedPatch) error {
+	var result error
+	for index := len(applied) - 1; index >= 0; index-- {
+		item := applied[index]
+		if item.operation.Operation == "create" {
+			if err := os.Remove(item.path); err != nil && !os.IsNotExist(err) {
+				result = errors.Join(result, fmt.Errorf("rollback create %q: %w", item.operation.Path, err))
+			}
+			continue
+		}
+		if err := atomicWriteFile(item.path, item.original, item.mode); err != nil {
+			result = errors.Join(result, fmt.Errorf("rollback %s %q: %w", item.operation.Operation, item.operation.Path, err))
+		}
+	}
+	return result
 }
 
 func (w *Workspace) resolveExisting(name string) (string, error) {

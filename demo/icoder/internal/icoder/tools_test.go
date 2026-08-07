@@ -106,3 +106,27 @@ func TestValidateCommandAllowlist(t *testing.T) {
 		}
 	}
 }
+
+func TestApplyPatchToolRequiresWritePermission(t *testing.T) {
+	root := t.TempDir()
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewPermissionService(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := agent.NewRegistry()
+	if err := registerTools(registry, workspace, nil, service, func() string { return "session" }); err != nil {
+		t.Fatal(err)
+	}
+	tool, ok := registry.Get("apply_patch")
+	if !ok {
+		t.Fatal("apply_patch was not registered")
+	}
+	result, err := tool.Execute(context.Background(), agent.ToolInvocation{CallID: "call-patch", Name: "apply_patch", RawInput: `{"operations":[{"operation":"create","path":"new.txt","content":"new"}]}`})
+	if err != nil || !result.IsError || !result.StopTurn || !strings.Contains(result.Content, "approval is unavailable") {
+		t.Fatalf("result = %#v, error = %v", result, err)
+	}
+}

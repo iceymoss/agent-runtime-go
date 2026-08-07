@@ -140,3 +140,100 @@ func TestWorkspaceCodeAgentOperations(t *testing.T) {
 		t.Fatal("EditFile() accepted stale digest")
 	}
 }
+
+func TestWorkspaceApplyPatch(t *testing.T) {
+	root := t.TempDir()
+	original := "package sample\n\nconst value = \"old\"\n"
+	deleteContent := "obsolete\n"
+	if err := os.WriteFile(filepath.Join(root, "sample.go"), []byte(original), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "obsolete.txt"), []byte(deleteContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := workspace.ApplyPatch(context.Background(), []PatchOperation{
+		{Operation: "update", Path: "sample.go", OldText: `"old"`, NewText: `"new"`, ExpectedDigest: digest([]byte(original))},
+		{Operation: "create", Path: "created.txt", Content: "created\n"},
+		{Operation: "delete", Path: "obsolete.txt", ExpectedDigest: digest([]byte(deleteContent))},
+	})
+	if err != nil || len(results) != 3 || results[0].Digest == "" || results[2].Digest != "" {
+		t.Fatalf("ApplyPatch() = %#v, %v", results, err)
+	}
+	updated, err := os.ReadFile(filepath.Join(root, "sample.go"))
+	if err != nil || !strings.Contains(string(updated), `"new"`) {
+		t.Fatalf("updated file = %q, %v", updated, err)
+	}
+	info, err := os.Stat(filepath.Join(root, "sample.go"))
+	if err != nil || info.Mode().Perm() != 0o750 {
+		t.Fatalf("updated mode = %v, %v", info.Mode().Perm(), err)
+	}
+	created, err := os.ReadFile(filepath.Join(root, "created.txt"))
+	if err != nil || string(created) != "created\n" {
+		t.Fatalf("created file = %q, %v", created, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "obsolete.txt")); !os.IsNotExist(err) {
+		t.Fatalf("deleted file stat error = %v", err)
+	}
+}
+
+func TestWorkspaceApplyPatchPreflightIsAtomic(t *testing.T) {
+	root := t.TempDir()
+	original := "original\n"
+	if err := os.WriteFile(filepath.Join(root, "existing.txt"), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = workspace.ApplyPatch(context.Background(), []PatchOperation{
+		{Operation: "create", Path: "new.txt", Content: "new\n"},
+		{Operation: "update", Path: "existing.txt", OldText: "missing", NewText: "changed"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "old_text was not found") {
+		t.Fatalf("ApplyPatch() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("preflight created a partial file: %v", err)
+	}
+	current, err := os.ReadFile(filepath.Join(root, "existing.txt"))
+	if err != nil || string(current) != original {
+		t.Fatalf("existing file = %q, %v", current, err)
+	}
+}
+
+func TestWorkspaceApplyPatchRejectsUnsafeOperations(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "existing.txt"), []byte("value\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name       string
+		operations []PatchOperation
+	}{
+		{name: "workspace escape", operations: []PatchOperation{{Operation: "create", Path: "../outside.txt", Content: "outside"}}},
+		{name: "stale digest", operations: []PatchOperation{{Operation: "delete", Path: "existing.txt", ExpectedDigest: digest([]byte("stale"))}}},
+		{name: "duplicate path", operations: []PatchOperation{{Operation: "update", Path: "existing.txt", OldText: "value", NewText: "one"}, {Operation: "delete", Path: "existing.txt"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := workspace.ApplyPatch(context.Background(), test.operations); err == nil {
+				t.Fatal("ApplyPatch() accepted unsafe operations")
+			}
+		})
+	}
+	current, err := os.ReadFile(filepath.Join(root, "existing.txt"))
+	if err != nil || string(current) != "value\n" {
+		t.Fatalf("existing file = %q, %v", current, err)
+	}
+}

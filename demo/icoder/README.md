@@ -9,7 +9,7 @@
 - 支持 slash command 自动补全、session picker、工具详情展开和 viewport 浏览。
 - `run` 非交互模式可用于脚本和 CI，支持 stdin 与 JSON 输出。
 - SQLite 持久化对话、usage 和 terminal events。
-- 文件 glob、正则搜索、带行号的范围读取、冲突安全的局部编辑和全量写入。
+- 文件 glob、正则搜索、带行号的范围读取、冲突安全的局部编辑、批量 patch 和全量写入。
 - 受限的 Go/Git 命令执行；写入和命令默认需要授权。
 - Skills、OpenAI-compatible provider 和 Streamable HTTP MCP。
 - Bash、Zsh、Fish 和 PowerShell completion。
@@ -118,6 +118,7 @@ icoder version                 显示版本
 | `git_status` | 查看分支和 workspace 状态 | allow |
 | `git_diff` | 查看 unstaged/staged diff | allow |
 | `edit_file` | 精确局部替换，支持 digest 冲突检查 | ask |
+| `apply_patch` | 批量创建、精确更新和删除文件，支持预检与失败回滚 | ask |
 | `write_file` | 创建或完整替换文件 | ask |
 | `run_command` | 执行受限 Go/Git 命令 | ask |
 | `get_weather` | Open-Meteo 只读网络请求 | allow |

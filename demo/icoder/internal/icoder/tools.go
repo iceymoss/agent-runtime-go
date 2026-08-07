@@ -235,6 +235,40 @@ type writeFileTool struct{ workspace *Workspace }
 
 type editFileTool struct{ workspace *Workspace }
 
+type applyPatchTool struct{ workspace *Workspace }
+
+func (t applyPatchTool) Definition() agent.ToolDefinition {
+	operation := map[string]any{"type": "object", "properties": map[string]any{
+		"operation":       map[string]any{"type": "string", "enum": []any{"create", "update", "delete"}},
+		"path":            map[string]any{"type": "string"},
+		"content":         map[string]any{"type": "string"},
+		"old_text":        map[string]any{"type": "string"},
+		"new_text":        map[string]any{"type": "string"},
+		"expected_digest": map[string]any{"type": "string"},
+		"replace_all":     map[string]any{"type": "boolean"},
+	}, "required": []any{"operation", "path"}}
+	return agent.ToolDefinition{Name: "apply_patch", Description: "Apply a batch of create, exact-text update, and delete operations inside the workspace. The entire batch is validated before execution and rolled back on failure.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"operations": map[string]any{"type": "array", "minItems": 1, "maxItems": 100, "items": operation}}, "required": []any{"operations"}}}
+}
+
+func (applyPatchTool) ReplayPolicy() agent.ReplayPolicy { return agent.ReplayPolicyNever }
+func (t applyPatchTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
+	var input struct {
+		Operations []PatchOperation `json:"operations"`
+	}
+	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
+		return agent.ToolResult{}, err
+	}
+	results, err := t.workspace.ApplyPatch(ctx, input.Operations)
+	if err != nil {
+		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
+	}
+	data, err := marshalString(results)
+	if err != nil {
+		return agent.ToolResult{}, err
+	}
+	return agent.ToolResult{Content: data}, nil
+}
+
 func (t editFileTool) Definition() agent.ToolDefinition {
 	return agent.ToolDefinition{Name: "edit_file", Description: "Replace an exact text fragment in an existing file. Fails on ambiguous or stale edits.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "old_text": map[string]any{"type": "string"}, "new_text": map[string]any{"type": "string"}, "expected_digest": map[string]any{"type": "string"}, "replace_all": map[string]any{"type": "boolean"}}, "required": []any{"path", "old_text", "new_text"}}}
 }
@@ -383,6 +417,7 @@ func registerTools(registry *agent.Registry, workspace *Workspace, weather Weath
 		{gitDiffTool{workspace: workspace}, "workspace.read"},
 		{writeFileTool{workspace: workspace}, "workspace.write"},
 		{editFileTool{workspace: workspace}, "workspace.write"},
+		{applyPatchTool{workspace: workspace}, "workspace.write"},
 		{runCommandTool{workspace: workspace}, "workspace.command"},
 		{weatherTool{provider: weather}, "network.read"},
 	}
