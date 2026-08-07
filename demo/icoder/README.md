@@ -8,7 +8,7 @@
 - 写入或命令执行时显示审批面板，可逐次允许或拒绝，不需要全局开放权限。
 - 支持 slash command 自动补全、session picker、工具详情展开和 viewport 浏览。
 - `run` 非交互模式可用于脚本和 CI，支持 stdin 与 JSON 输出。
-- SQLite 持久化对话、usage、terminal events，以及 changed files 和 validation checks 摘要。
+- SQLite 持久化对话、usage、terminal events，以及可恢复的任务状态、changed files 和 validation checks。
 - 支持 ignore 规则的文件 glob/搜索、结构化范围读取、冲突安全的局部编辑、批量 patch 和全量写入。
 - 不经过 shell 的 Go、Node、Python、Rust、Make 和只读 Git 命令 profile；写入和命令默认需要授权。
 - Skills、OpenAI-compatible provider 和 Streamable HTTP MCP。

@@ -136,3 +136,35 @@ func TestStoreHistoryIsIsolatedBySession(t *testing.T) {
 		t.Fatalf("alpha = %#v, beta = %#v", alpha, beta)
 	}
 }
+
+func TestStorePersistsTaskStateWithTurn(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "icoder.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	snapshot, _, err := store.Load(ctx, "task-state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := agent.ToolCall{ID: "write", Name: "write_file", Input: `{"path":"main.go"}`}
+	result := agent.RunResult{Messages: []agent.Message{
+		{Role: agent.RoleAssistant, Parts: []agent.ContentPart{{Type: agent.PartToolCall, ToolCall: &write}}},
+		agent.NewToolMessage(agent.ToolResult{ToolCallID: "write", Name: "write_file", Content: `{}`}),
+	}}
+	if err := store.CommitTurn(ctx, snapshot, "request", "input", agent.NewUserMessage("fix main"), result); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.LoadTaskState(ctx, "task-state")
+	if err != nil || state == nil || state.Goal != "fix main" || state.Status != "needs_validation" || state.Verification != "unverified" || len(state.ChangedFiles) != 1 || state.ChangedFiles[0] != "main.go" {
+		t.Fatalf("LoadTaskState() = %#v, %v", state, err)
+	}
+	if err := store.ClearSession(ctx, "task-state"); err != nil {
+		t.Fatal(err)
+	}
+	state, err = store.LoadTaskState(ctx, "task-state")
+	if err != nil || state != nil {
+		t.Fatalf("LoadTaskState() after clear = %#v, %v", state, err)
+	}
+}

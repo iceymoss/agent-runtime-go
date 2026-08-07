@@ -124,7 +124,7 @@
 - 使用 provider tokenizer 或 runtime 的保守 estimator。
 - 动态计算 tool schema token 预算。
 - [x] 接通 prepare、compact、persist artifact、reprepare 流程。
-- 持久化轻量任务状态：goal、changed files、checks 和 open issues。
+- [x] 持久化轻量任务状态：goal、changed files、checks 和 open issues。
 
 验收：
 

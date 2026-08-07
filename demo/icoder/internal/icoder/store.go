@@ -33,6 +33,15 @@ type SessionInfo struct {
 	UpdatedAt string
 }
 
+type TaskState struct {
+	Goal         string            `json:"goal"`
+	Status       string            `json:"status"`
+	ChangedFiles []string          `json:"changed_files"`
+	Checks       []ValidationCheck `json:"checks"`
+	Verification string            `json:"verification"`
+	OpenIssues   []string          `json:"open_issues"`
+}
+
 func OpenStore(path string) (*Store, error) {
 	db, err := sql.Open("sqlite3", "file:"+path+"?_busy_timeout=10000&_foreign_keys=on")
 	if err != nil {
@@ -106,6 +115,12 @@ func (s *Store) migrate() error {
 		`CREATE TABLE IF NOT EXISTS icoder_session_context (
 			session_id TEXT PRIMARY KEY,
 			pivot_payload BLOB NOT NULL,
+			updated_at TEXT NOT NULL,
+			FOREIGN KEY (session_id) REFERENCES icoder_sessions(id) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS icoder_task_state (
+			session_id TEXT PRIMARY KEY,
+			payload BLOB NOT NULL,
 			updated_at TEXT NOT NULL,
 			FOREIGN KEY (session_id) REFERENCES icoder_sessions(id) ON DELETE CASCADE
 		)`,
@@ -292,7 +307,35 @@ func (s *Store) CommitTurn(ctx context.Context, snapshot SessionSnapshot, reques
 	if _, err := tx.ExecContext(ctx, `INSERT INTO icoder_events(session_id, sequence, event_id, event_type, payload, occurred_at) VALUES(?, ?, ?, ?, ?, ?)`, snapshot.ID, snapshot.Revision+1, requestID+":terminal", "agent.run.terminal", payload, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
 	}
+	summary := summarizeRun(result.Messages)
+	status := "completed"
+	if summary.Verification == "unverified" {
+		status = "needs_validation"
+	}
+	taskPayload, err := marshalString(TaskState{Goal: user.Text(), Status: status, ChangedFiles: summary.ChangedFiles, Checks: summary.Checks, Verification: summary.Verification, OpenIssues: []string{}})
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO icoder_task_state(session_id, payload, updated_at) VALUES(?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`, snapshot.ID, taskPayload, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+func (s *Store) LoadTaskState(ctx context.Context, sessionID string) (*TaskState, error) {
+	var payload []byte
+	err := s.db.QueryRowContext(ctx, `SELECT payload FROM icoder_task_state WHERE session_id = ?`, sessionID).Scan(&payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var state TaskState
+	if err := json.Unmarshal(payload, &state); err != nil {
+		return nil, err
+	}
+	return &state, nil
 }
 
 func (s *Store) ReplayEvents(ctx context.Context, sessionID string, after uint64, limit int) (events []event.Envelope, resultErr error) {
@@ -352,6 +395,8 @@ func (s *Store) ClearSession(ctx context.Context, sessionID string) (resultErr e
 		}
 	}()
 	for _, statement := range []string{
+		`DELETE FROM icoder_task_state WHERE session_id = ?`,
+		`DELETE FROM icoder_session_context WHERE session_id = ?`,
 		`DELETE FROM icoder_events WHERE session_id = ?`,
 		`DELETE FROM icoder_turns WHERE session_id = ?`,
 		`DELETE FROM icoder_messages WHERE session_id = ?`,

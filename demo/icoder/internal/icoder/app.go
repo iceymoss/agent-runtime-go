@@ -228,6 +228,17 @@ func (a *App) RunWithApproval(ctx context.Context, instruction string, observe f
 	}
 	capabilityMessages := append([]agent.Message(nil), a.capabilities...)
 	capabilityMessages = append(capabilityMessages, projectInstructions...)
+	taskState, err := a.store.LoadTaskState(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if taskState != nil {
+		statePayload, err := marshalString(taskState)
+		if err != nil {
+			return nil, err
+		}
+		capabilityMessages = append(capabilityMessages, agent.NewSystemMessage("<untrusted-session-task-state>\n"+statePayload+"\n</untrusted-session-task-state>"))
+	}
 	request := agentcontext.PrepareRequest{
 		// Bind the plan to the invocation revision that CommitTurn will publish.
 		Source:           agentcontext.SourceRef{TenantKey: "local", SessionKey: sessionID, SessionRevision: snapshot.Revision + 1},
