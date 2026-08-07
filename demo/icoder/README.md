@@ -149,7 +149,7 @@ icoder version                 显示版本
 ./icoder --mcp-url 'https://approved-mcp.example.com/mcp'
 ```
 
-MCP 工具由远端服务定义且默认按未知网络副作用逐次询问审批。连接器仍只应指向经过批准的 endpoint。`delegate_review` 当前是 synthetic lifecycle 示例，不会执行真实模型 review。
+MCP 工具由远端服务定义且默认按未知网络副作用逐次询问审批。连接器仍只应指向经过批准的 endpoint。`delegate_review` 使用独立预算和只读工具集执行真实模型 review。
 
 ## 验证
 

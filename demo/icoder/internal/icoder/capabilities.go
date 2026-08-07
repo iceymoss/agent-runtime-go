@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/iceymoss/agent-runtime-go"
@@ -97,11 +98,32 @@ func registerMCP(ctx context.Context, registry *agent.Registry, endpoint string,
 	return manager, names, nil
 }
 
-type reviewRunner struct{}
+type reviewRunner struct {
+	agent   *agent.Agent
+	mu      sync.RWMutex
+	results map[subagent.ResultRef]string
+}
 
-func (reviewRunner) Run(_ context.Context, request subagent.RunRequest) (subagent.RunResult, error) {
+func (r *reviewRunner) Run(ctx context.Context, request subagent.RunRequest) (subagent.RunResult, error) {
+	result, err := r.agent.Run(ctx, agent.RunRequest{Messages: []agent.Message{
+		agent.NewSystemMessage("You are an independent read-only code reviewer. Inspect relevant files and git changes before reporting findings. Prioritize correctness, security, regressions, and missing tests. Return findings with file and line references; state explicitly when no findings are found."),
+		agent.NewUserMessage(string(request.Input)),
+	}})
+	if err != nil {
+		return subagent.RunResult{}, err
+	}
 	ref := subagent.ResultRef("review:" + digest(request.Input)[7:23])
-	return subagent.RunResult{State: subagent.ChildCompleted, ResultRef: ref, UsageFactKey: subagent.UsageFactKey(ref), Usage: subagent.Usage{InputTokens: int64(len(request.Input) / 4), OutputTokens: 32}}, nil
+	r.mu.Lock()
+	r.results[ref] = result.Text
+	r.mu.Unlock()
+	return subagent.RunResult{State: subagent.ChildCompleted, ResultRef: ref, UsageFactKey: subagent.UsageFactKey(ref), Usage: subagent.Usage{InputTokens: int64(result.Usage.PromptTokens), OutputTokens: int64(result.Usage.CompletionTokens)}}, nil
+}
+
+func (r *reviewRunner) Result(ref subagent.ResultRef) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	value, ok := r.results[ref]
+	return value, ok
 }
 
 type wakeRecorder struct{}
@@ -112,6 +134,7 @@ func (wakeRecorder) Wake(_ context.Context, request subagent.WakeRequest) error 
 
 type delegateReviewTool struct {
 	service   *subagent.Service
+	runner    *reviewRunner
 	sessionID func() string
 }
 
@@ -143,15 +166,32 @@ func (t *delegateReviewTool) Execute(ctx context.Context, invocation agent.ToolI
 	if _, err := t.service.Reconcile(ctx, subagent.ReconcileRequest{TenantKey: "local", Limit: 10}); err != nil {
 		return agent.ToolResult{}, err
 	}
-	return agent.ToolResult{Content: fmt.Sprintf("child=%s state=%s result=%s", receipt.Child.RunKey, snapshot.State, snapshot.ResultRef)}, nil
+	review, ok := t.runner.Result(snapshot.ResultRef)
+	if !ok {
+		return agent.ToolResult{Content: "child completed without a readable result", IsError: true}, nil
+	}
+	data, err := marshalString(map[string]any{"child": receipt.Child.RunKey, "state": snapshot.State, "result_ref": snapshot.ResultRef, "review": review})
+	return agent.ToolResult{Content: data}, err
 }
 
-func registerSubagent(registry *agent.Registry, sessionID func() string) error {
-	service, err := subagent.New(subagent.Options{Store: subagent.NewMemoryStore(), Runner: reviewRunner{}, ParentWaker: wakeRecorder{}, WorkerID: "icoder-worker", LeaseDuration: time.Minute})
+func registerSubagent(registry *agent.Registry, model agent.Model, modelName string, workspace *Workspace, sessionID func() string) error {
+	reviewRegistry := agent.NewRegistry()
+	for _, tool := range []agent.Tool{workingDirectoryTool{workspace}, listFilesTool{workspace}, globFilesTool{workspace}, readFileTool{workspace}, searchCodeTool{workspace}, gitStatusTool{workspace}, gitDiffTool{workspace}} {
+		if err := reviewRegistry.Register(tool); err != nil {
+			return err
+		}
+	}
+	maxTokens := 2048
+	reviewAgent, err := agent.New(agent.Config{Key: "icoder.reviewer", ModelName: modelName, MaxSteps: 10, MaxTokens: &maxTokens, AllowedTools: reviewRegistry.Names()}, model, reviewRegistry)
 	if err != nil {
 		return err
 	}
-	return registry.Register(&delegateReviewTool{service: service, sessionID: sessionID})
+	runner := &reviewRunner{agent: reviewAgent, results: make(map[subagent.ResultRef]string)}
+	service, err := subagent.New(subagent.Options{Store: subagent.NewMemoryStore(), Runner: runner, ParentWaker: wakeRecorder{}, WorkerID: "icoder-worker", LeaseDuration: time.Minute})
+	if err != nil {
+		return err
+	}
+	return registry.Register(&delegateReviewTool{service: service, runner: runner, sessionID: sessionID})
 }
 
 func errorsJoin(left, right error) error {

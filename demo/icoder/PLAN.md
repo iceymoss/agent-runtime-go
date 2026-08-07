@@ -163,7 +163,7 @@
 
 - [x] MCP tool 映射 action、resource、effect class 和 replay policy。
 - [x] MCP 调用进入统一 permission、generation 和 result 限制。
-- 用真实只读 reviewer child agent 替换 synthetic runner。
+- [x] 用真实只读 reviewer child agent 替换 synthetic runner。
 - 增加 explorer child agent。
 - 第一版同步返回 child 结果，随后接入 spawn、suspend、wake 和 resume。
 

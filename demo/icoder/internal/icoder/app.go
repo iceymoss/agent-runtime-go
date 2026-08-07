@@ -129,7 +129,7 @@ func NewApp(ctx context.Context, config Config) (app *App, resultErr error) {
 	if err := registerSkillTools(registry, skillCatalog, skillSnapshot, permissions, state.Get); err != nil {
 		return nil, err
 	}
-	if err := registerSubagent(registry, state.Get); err != nil {
+	if err := registerSubagent(registry, model, config.Model, workspace, state.Get); err != nil {
 		return nil, err
 	}
 	allowedTools := registry.Names()
