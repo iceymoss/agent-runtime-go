@@ -2,6 +2,7 @@ package icoder
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -40,8 +41,33 @@ type SearchMatch struct {
 }
 
 type CommandResult struct {
-	ExitCode int    `json:"exit_code"`
-	Output   string `json:"output"`
+	ExitCode        int    `json:"exit_code"`
+	Stdout          string `json:"stdout"`
+	Stderr          string `json:"stderr"`
+	TimedOut        bool   `json:"timed_out"`
+	StdoutTruncated bool   `json:"stdout_truncated"`
+	StderrTruncated bool   `json:"stderr_truncated"`
+}
+
+type limitedBuffer struct {
+	buffer    bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (w *limitedBuffer) Write(data []byte) (int, error) {
+	originalLength := len(data)
+	remaining := w.limit - w.buffer.Len()
+	if remaining <= 0 {
+		w.truncated = w.truncated || originalLength > 0
+		return originalLength, nil
+	}
+	if len(data) > remaining {
+		data = data[:remaining]
+		w.truncated = true
+	}
+	_, _ = w.buffer.Write(data)
+	return originalLength, nil
 }
 
 type FileContent struct {
@@ -409,21 +435,49 @@ func (w *Workspace) ListFiles(ctx context.Context, limit int) ([]string, error) 
 }
 
 func (w *Workspace) RunCommand(ctx context.Context, program string, args []string, timeout time.Duration) (CommandResult, error) {
+	return w.RunCommandIn(ctx, program, args, "", timeout)
+}
+
+func (w *Workspace) RunCommandIn(ctx context.Context, program string, args []string, directory string, timeout time.Duration) (CommandResult, error) {
 	if timeout <= 0 || timeout > 2*time.Minute {
 		timeout = time.Minute
+	}
+	workingDirectory := w.WorkingDirectory()
+	if directory != "" && directory != "." {
+		resolved, err := w.resolveExisting(directory)
+		if err != nil {
+			return CommandResult{}, err
+		}
+		info, err := os.Stat(resolved)
+		if err != nil {
+			return CommandResult{}, err
+		}
+		if !info.IsDir() {
+			return CommandResult{}, fmt.Errorf("command cwd is not a directory")
+		}
+		workingDirectory = resolved
 	}
 	commandCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	command := exec.CommandContext(commandCtx, program, args...)
-	command.Dir = w.WorkingDirectory()
+	command.Dir = workingDirectory
 	command.Env = append([]string(nil), os.Environ()...)
-	output, err := command.CombinedOutput()
-	if len(output) > maxToolOutput {
-		output = output[:maxToolOutput]
-	}
-	result := CommandResult{Output: string(output)}
+	stdout := &limitedBuffer{limit: maxToolOutput}
+	stderr := &limitedBuffer{limit: maxToolOutput}
+	command.Stdout = stdout
+	command.Stderr = stderr
+	err := command.Run()
+	result := CommandResult{ExitCode: 0, Stdout: stdout.buffer.String(), Stderr: stderr.buffer.String(), StdoutTruncated: stdout.truncated, StderrTruncated: stderr.truncated}
 	if err == nil {
 		return result, nil
+	}
+	if errors.Is(commandCtx.Err(), context.DeadlineExceeded) {
+		result.ExitCode = -1
+		result.TimedOut = true
+		return result, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return CommandResult{}, err
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {

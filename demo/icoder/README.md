@@ -10,7 +10,7 @@
 - `run` 非交互模式可用于脚本和 CI，支持 stdin 与 JSON 输出。
 - SQLite 持久化对话、usage 和 terminal events。
 - 支持 ignore 规则的文件 glob/搜索、结构化范围读取、冲突安全的局部编辑、批量 patch 和全量写入。
-- 受限的 Go/Git 命令执行；写入和命令默认需要授权。
+- 不经过 shell 的 Go、Node、Python、Rust、Make 和只读 Git 命令 profile；写入和命令默认需要授权。
 - Skills、OpenAI-compatible provider 和 Streamable HTTP MCP。
 - Bash、Zsh、Fish 和 PowerShell completion。
 
@@ -135,7 +135,7 @@ icoder version                 显示版本
 ./icoder run --workspace /path/to/repository --allow-writes '完成修改并测试'
 ```
 
-`--allow-writes` 是进程级授权，不是 sandbox。工具使用当前用户身份运行，路径限制也不能替代操作系统隔离。`run_command` 只允许 `go test/vet/build/fmt` 和 `git status/diff/log/show`；只读审查应优先使用无需审批的 `git_status` 与 `git_diff`。
+`--allow-writes` 是进程级授权，不是 sandbox。工具使用当前用户身份运行，路径限制也不能替代操作系统隔离。`run_command` 不启动 shell，只允许预定义的 Go、Node、Python、Rust、Make 和只读 Git profile；只读审查应优先使用无需审批的 `git_status` 与 `git_diff`。
 
 ## 数据与扩展
 

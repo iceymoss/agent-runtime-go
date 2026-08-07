@@ -379,13 +379,14 @@ func (t gitDiffTool) Execute(ctx context.Context, invocation agent.ToolInvocatio
 }
 
 func (t runCommandTool) Definition() agent.ToolDefinition {
-	return agent.ToolDefinition{Name: "run_command", Description: "Run an approved build, test, format, or Git inspection command in the workspace. Requires permission.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"program": map[string]any{"type": "string", "enum": []any{"go", "git"}}, "args": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 120}}, "required": []any{"program", "args"}}}
+	return agent.ToolDefinition{Name: "run_command", Description: "Run an approved build, test, lint, format, or Git inspection command without a shell. Requires permission.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"program": map[string]any{"type": "string", "enum": []any{"go", "gofmt", "git", "npm", "pnpm", "yarn", "pytest", "ruff", "cargo", "rustfmt", "make"}}, "args": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "cwd": map[string]any{"type": "string"}, "timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 120}}, "required": []any{"program", "args"}}}
 }
 func (runCommandTool) ReplayPolicy() agent.ReplayPolicy { return agent.ReplayPolicyNever }
 func (t runCommandTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
 	var input struct {
 		Program        string   `json:"program"`
 		Args           []string `json:"args"`
+		CWD            string   `json:"cwd"`
 		TimeoutSeconds int      `json:"timeout_seconds"`
 	}
 	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
@@ -394,7 +395,7 @@ func (t runCommandTool) Execute(ctx context.Context, invocation agent.ToolInvoca
 	if err := validateCommand(input.Program, input.Args); err != nil {
 		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
 	}
-	result, err := t.workspace.RunCommand(ctx, input.Program, input.Args, time.Duration(input.TimeoutSeconds)*time.Second)
+	result, err := t.workspace.RunCommandIn(ctx, input.Program, input.Args, input.CWD, time.Duration(input.TimeoutSeconds)*time.Second)
 	if err != nil {
 		return agent.ToolResult{}, err
 	}
@@ -406,20 +407,41 @@ func (t runCommandTool) Execute(ctx context.Context, invocation agent.ToolInvoca
 }
 
 func validateCommand(program string, args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("command arguments are required")
-	}
 	switch program {
 	case "go":
+		if len(args) == 0 {
+			break
+		}
 		switch args[0] {
-		case "test", "vet", "build", "fmt":
+		case "test", "vet", "build", "fmt", "generate":
 			return nil
 		}
 	case "git":
+		if len(args) == 0 {
+			break
+		}
 		switch args[0] {
 		case "status", "diff", "log", "show":
 			return nil
 		}
+	case "npm", "pnpm", "yarn":
+		if len(args) > 0 {
+			switch args[0] {
+			case "test", "build", "lint", "check", "typecheck", "format":
+				return nil
+			}
+		}
+	case "pytest", "ruff":
+		return nil
+	case "cargo":
+		if len(args) > 0 {
+			switch args[0] {
+			case "test", "build", "check", "clippy", "fmt":
+				return nil
+			}
+		}
+	case "gofmt", "rustfmt", "make":
+		return nil
 	}
 	return fmt.Errorf("command is not approved")
 }

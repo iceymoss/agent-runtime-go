@@ -101,8 +101,8 @@
 - [x] 增加 move 和显式目录创建能力。
 - [x] 统一 `read_file` 的行号、digest、总行数和 truncation 返回。
 - [x] 支持 `.gitignore`/`.ignore`、二进制和大文件过滤。
-- [ ] 扩展直接 argv 命令 profile，覆盖 Go、Node、Python 和 Rust。
-- [ ] 返回 stdout、stderr、exit code、timeout 和 truncation 元数据。
+- [x] 扩展直接 argv 命令 profile，覆盖 Go、Node、Python 和 Rust。
+- [x] 返回 stdout、stderr、exit code、timeout 和 truncation 元数据。
 - [ ] 修改后跟踪 changed files 和 checks，未验证时明确标记。
 
 验收：

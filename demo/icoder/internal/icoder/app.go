@@ -269,9 +269,9 @@ func (a *App) GitDiff(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if result.ExitCode != 0 {
-		return "", fmt.Errorf("git diff exited with code %d: %s", result.ExitCode, result.Output)
+		return "", fmt.Errorf("git diff exited with code %d: %s", result.ExitCode, result.Stderr)
 	}
-	return result.Output, nil
+	return result.Stdout, nil
 }
 
 func (a *App) Tools() []string { return append([]string(nil), a.tools...) }

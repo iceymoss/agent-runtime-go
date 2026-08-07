@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -67,8 +68,42 @@ func TestWorkspaceListAndCommand(t *testing.T) {
 		t.Fatalf("ListFiles() = %#v, %v", files, err)
 	}
 	result, err := workspace.RunCommand(context.Background(), "go", []string{"env", "GOMOD"}, 0)
-	if err != nil || result.ExitCode != 0 || result.Output == "" {
+	if err != nil || result.ExitCode != 0 || result.Stdout == "" {
 		t.Fatalf("RunCommand() = %#v, %v", result, err)
+	}
+}
+
+func TestWorkspaceRunCommandReturnsStructuredOutputAndCWD(t *testing.T) {
+	root := t.TempDir()
+	subdirectory := filepath.Join(root, "module")
+	if err := os.MkdirAll(subdirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subdirectory, "go.mod"), []byte("module example.com/nested\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := workspace.RunCommandIn(context.Background(), "go", []string{"env", "GOMOD"}, "module", 30*time.Second)
+	if err != nil || result.ExitCode != 0 || result.Stderr != "" || !strings.Contains(result.Stdout, "module/go.mod") || result.TimedOut || result.StdoutTruncated || result.StderrTruncated {
+		t.Fatalf("RunCommandIn() = %#v, %v", result, err)
+	}
+	failure, err := workspace.RunCommand(context.Background(), "go", []string{"env", "-invalid-flag"}, 30*time.Second)
+	if err != nil || failure.ExitCode == 0 || failure.Stderr == "" {
+		t.Fatalf("RunCommand() failure = %#v, %v", failure, err)
+	}
+	if _, err := workspace.RunCommandIn(context.Background(), "go", []string{"env", "GOMOD"}, "../outside", 30*time.Second); err == nil {
+		t.Fatal("RunCommandIn() allowed cwd outside the workspace")
+	}
+}
+
+func TestLimitedBufferReportsTruncation(t *testing.T) {
+	buffer := &limitedBuffer{limit: 5}
+	written, err := buffer.Write([]byte("123456789"))
+	if err != nil || written != 9 || buffer.buffer.String() != "12345" || !buffer.truncated {
+		t.Fatalf("limitedBuffer.Write() = %d, %q, %t, %v", written, buffer.buffer.String(), buffer.truncated, err)
 	}
 }
 

@@ -95,8 +95,18 @@ func TestValidateCommandAllowlist(t *testing.T) {
 		valid   bool
 	}{
 		{program: "go", args: []string{"test", "./..."}, valid: true},
+		{program: "gofmt", args: []string{"-w", "main.go"}, valid: true},
 		{program: "git", args: []string{"diff"}, valid: true},
+		{program: "npm", args: []string{"test"}, valid: true},
+		{program: "pnpm", args: []string{"lint"}, valid: true},
+		{program: "pytest", args: []string{"tests"}, valid: true},
+		{program: "ruff", args: []string{"check", "."}, valid: true},
+		{program: "cargo", args: []string{"clippy"}, valid: true},
+		{program: "rustfmt", args: []string{"main.rs"}, valid: true},
+		{program: "make", args: []string{"test"}, valid: true},
 		{program: "git", args: []string{"push"}},
+		{program: "npm", args: []string{"exec", "tool"}},
+		{program: "cargo", args: []string{"publish"}},
 		{program: "sh", args: []string{"-c", "true"}},
 		{program: "go"},
 	} {
