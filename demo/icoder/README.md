@@ -94,6 +94,7 @@ printf '%s' '解释这个项目的架构' | ./icoder run --workspace .
 icoder                         启动 TUI
 icoder chat                    显式启动 TUI
 icoder run [prompt]            执行单个任务
+icoder eval                    使用当前模型运行 deterministic coding suite
 icoder session list            列出会话
 icoder session history         查看当前会话历史
 icoder session clear           清空当前会话
@@ -106,6 +107,12 @@ icoder version                 显示版本
 ```
 
 使用 `icoder <command> --help` 查看完整 flags。常用全局参数包括 `--workspace`、`--session`、`--db`、`--model`、`--max-steps`、`--max-tokens`、`--skills` 和 `--mcp-url`。
+
+真实模型评测会为每个 fixture 创建隔离 workspace 和数据库，并输出任务通过率、token、工具调用和耗时：
+
+```bash
+./icoder eval --fixtures internal/eval
+```
 
 ## 工具与权限
 

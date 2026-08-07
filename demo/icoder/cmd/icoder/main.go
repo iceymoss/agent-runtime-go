@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/iceymoss/agent-runtime-go"
+	icodereval "github.com/iceymoss/agent-runtime-go/demo/icoder/internal/eval"
 	"github.com/iceymoss/agent-runtime-go/demo/icoder/internal/icoder"
 	"github.com/iceymoss/agent-runtime-go/demo/icoder/internal/ui"
 	"github.com/spf13/cobra"
@@ -63,6 +64,7 @@ func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
 
 	root.AddCommand(newChatCommand(opts, stderr))
 	root.AddCommand(newRunCommand(opts, stdout, stderr))
+	root.AddCommand(newEvalCommand(opts, stdout))
 	root.AddCommand(newSessionCommand(opts, stdout, stderr))
 	root.AddCommand(newEventsCommand(opts, stdout, stderr))
 	root.AddCommand(newToolsCommand(opts, stdout, stderr))
@@ -70,6 +72,25 @@ func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	root.AddCommand(&cobra.Command{Use: "version", Short: "Print version", Args: cobra.NoArgs, Run: func(*cobra.Command, []string) { fmt.Fprintln(stdout, "icoder "+version) }})
 	root.AddCommand(newCompletionCommand(root))
 	return root
+}
+
+func newEvalCommand(opts *options, stdout io.Writer) *cobra.Command {
+	var fixtures string
+	command := &cobra.Command{Use: "eval", Short: "Run the deterministic coding suite with the configured model", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		report, err := (icodereval.Harness{Runner: icodereval.ICoderRunner{Config: opts.config}}).Run(cmd.Context(), icodereval.CodingSuite(fixtures))
+		if err != nil {
+			return err
+		}
+		if err := writeJSON(stdout, report); err != nil {
+			return err
+		}
+		if report.Failed > 0 {
+			return fmt.Errorf("%d eval tasks failed", report.Failed)
+		}
+		return nil
+	}}
+	command.Flags().StringVar(&fixtures, "fixtures", "internal/eval", "directory containing the eval testdata folder")
+	return command
 }
 
 func newChatCommand(opts *options, stderr io.Writer) *cobra.Command {

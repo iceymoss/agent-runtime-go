@@ -12,13 +12,20 @@ import (
 )
 
 type Runner interface {
-	Run(context.Context, string, string) error
+	Run(context.Context, string, string) (RunMetrics, error)
 }
 
-type RunnerFunc func(context.Context, string, string) error
+type RunnerFunc func(context.Context, string, string) (RunMetrics, error)
 
-func (f RunnerFunc) Run(ctx context.Context, workspace, prompt string) error {
+func (f RunnerFunc) Run(ctx context.Context, workspace, prompt string) (RunMetrics, error) {
 	return f(ctx, workspace, prompt)
+}
+
+type RunMetrics struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+	ToolCalls        int `json:"tool_calls"`
 }
 
 type Task struct {
@@ -40,6 +47,7 @@ type TaskResult struct {
 	ID       string        `json:"id"`
 	Passed   bool          `json:"passed"`
 	Duration time.Duration `json:"duration"`
+	Metrics  RunMetrics    `json:"metrics"`
 	Error    string        `json:"error,omitempty"`
 }
 
@@ -76,7 +84,7 @@ func (h Harness) Run(ctx context.Context, tasks []Task) (Report, error) {
 		workspace := filepath.Join(root, safeTaskID(task.ID))
 		err := copyFixture(task.Fixture, workspace)
 		if err == nil {
-			err = h.Runner.Run(ctx, workspace, task.Prompt)
+			result.Metrics, err = h.Runner.Run(ctx, workspace, task.Prompt)
 		}
 		if err == nil {
 			err = evaluateAssertions(ctx, workspace, task.Assertions)
