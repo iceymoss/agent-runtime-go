@@ -12,6 +12,7 @@
 - 支持 ignore 规则的文件 glob/搜索、结构化范围读取、冲突安全的局部编辑、批量 patch 和全量写入。
 - 不经过 shell 的 Go、Node、Python、Rust、Make 和只读 Git 命令 profile；写入和命令默认需要授权。
 - Skills、OpenAI-compatible provider 和 Streamable HTTP MCP。
+- 分层加载 workspace 根目录到当前工具 cwd 的 `AGENTS.md` 项目指令。
 - Bash、Zsh、Fish 和 PowerShell completion。
 
 ## 安装

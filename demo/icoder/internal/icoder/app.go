@@ -197,10 +197,16 @@ func (a *App) RunWithApproval(ctx context.Context, instruction string, observe f
 	if err != nil {
 		return nil, err
 	}
+	projectInstructions, err := a.workspace.ProjectInstructions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	capabilityMessages := append([]agent.Message(nil), a.capabilities...)
+	capabilityMessages = append(capabilityMessages, projectInstructions...)
 	plan, err := a.planner.Prepare(ctx, agentcontext.PrepareRequest{
 		// Bind the plan to the invocation revision that CommitTurn will publish.
 		Source:           agentcontext.SourceRef{TenantKey: "local", SessionKey: sessionID, SessionRevision: snapshot.Revision + 1},
-		Runtime:          agentcontext.RuntimeArtifacts{DefinitionDigest: runtimeDigest, ProjectionVersion: "openai-chat-completions/v1", TokenizerID: byteCounter{}.ID(), SystemMessages: []agent.Message{agent.NewSystemMessage(renderedPrompt)}, CapabilityMessages: a.capabilities, ExecutionPolicy: string(policyVersion), ExecutionPolicyDigest: digest([]byte(policyVersion))},
+		Runtime:          agentcontext.RuntimeArtifacts{DefinitionDigest: runtimeDigest, ProjectionVersion: "openai-chat-completions/v1", TokenizerID: byteCounter{}.ID(), SystemMessages: []agent.Message{agent.NewSystemMessage(renderedPrompt)}, CapabilityMessages: capabilityMessages, ExecutionPolicy: string(policyVersion), ExecutionPolicyDigest: digest([]byte(policyVersion))},
 		MainlineMessages: normalized.Messages, InvocationMessages: []agent.Message{agent.NewUserMessage(instruction)},
 		Budget: agentcontext.Budget{ContextTokens: a.config.ContextWindow, ReservedOutputTokens: a.config.MaxTokens, SafetyMarginTokens: 1024, ToolSchemaTokens: 2048},
 	})

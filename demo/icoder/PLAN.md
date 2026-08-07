@@ -119,7 +119,7 @@
 
 任务：
 
-- 分层加载 workspace 和子目录 `AGENTS.md`。
+- [x] 分层加载 workspace 和子目录 `AGENTS.md`。
 - Skills 初始只暴露 metadata，通过 `list_skills`/`load_skill` 按需读取。
 - 使用 provider tokenizer 或 runtime 的保守 estimator。
 - 动态计算 tool schema token 预算。
