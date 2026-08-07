@@ -25,8 +25,11 @@ func (t *authorizedTool) ReplayPolicy() agent.ReplayPolicy { return t.tool.Repla
 
 func (t *authorizedTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
 	inputDigest := permission.InputDigest(digest([]byte(invocation.RawInput)))
-	sessionID := t.sessionID()
 	run := currentRunContext(ctx)
+	sessionID := run.session
+	if sessionID == "" {
+		sessionID = t.sessionID()
+	}
 	if run.id == "" {
 		run.id = sessionID
 	}

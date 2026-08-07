@@ -25,11 +25,12 @@ type runContextKey struct{}
 
 type runContext struct {
 	id      string
+	session string
 	approve ApprovalFunc
 }
 
-func withRunContext(ctx context.Context, id string, approve ApprovalFunc) context.Context {
-	return context.WithValue(ctx, runContextKey{}, runContext{id: id, approve: approve})
+func withRunContext(ctx context.Context, id, session string, approve ApprovalFunc) context.Context {
+	return context.WithValue(ctx, runContextKey{}, runContext{id: id, session: session, approve: approve})
 }
 
 func currentRunContext(ctx context.Context) runContext {

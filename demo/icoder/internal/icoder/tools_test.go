@@ -46,7 +46,7 @@ func TestAuthorizedToolExecutesAfterApproval(t *testing.T) {
 	inner := &fixedTool{}
 	tool := &authorizedTool{tool: inner, permission: service, action: "workspace.write", sessionID: func() string { return "session" }, resource: func(string) permission.Resource { return permission.Resource{Kind: "file", Key: "file.go"} }}
 	var prompt ApprovalPrompt
-	ctx := withRunContext(context.Background(), "run-1", func(_ context.Context, value ApprovalPrompt) (ApprovalDecision, error) {
+	ctx := withRunContext(context.Background(), "run-1", "session", func(_ context.Context, value ApprovalPrompt) (ApprovalDecision, error) {
 		prompt = value
 		return ApprovalApproveOnce, nil
 	})
@@ -66,7 +66,7 @@ func TestAuthorizedToolDoesNotExecuteAfterRejection(t *testing.T) {
 	}
 	inner := &fixedTool{}
 	tool := &authorizedTool{tool: inner, permission: service, action: "workspace.write", sessionID: func() string { return "session" }, resource: func(string) permission.Resource { return permission.Resource{Kind: "file", Key: "file.go"} }}
-	ctx := withRunContext(context.Background(), "run-2", func(context.Context, ApprovalPrompt) (ApprovalDecision, error) { return ApprovalDeny, nil })
+	ctx := withRunContext(context.Background(), "run-2", "session", func(context.Context, ApprovalPrompt) (ApprovalDecision, error) { return ApprovalDeny, nil })
 	result, err := tool.Execute(ctx, agent.ToolInvocation{CallID: "call-1", Name: "write_file", RawInput: `{}`})
 	if err != nil || !result.IsError || !result.StopTurn || inner.calls != 0 {
 		t.Fatalf("result = %#v, calls = %d, error = %v", result, inner.calls, err)
@@ -85,6 +85,27 @@ func TestAuthorizedToolAllowsWriteFlag(t *testing.T) {
 	result, err := tool.Execute(context.Background(), agent.ToolInvocation{CallID: "call-1", Name: "write_file", RawInput: `{}`})
 	if err != nil || result.Content != "written" || inner.calls != 1 {
 		t.Fatalf("result = %#v, calls = %d, error = %v", result, inner.calls, err)
+	}
+}
+
+func TestAuthorizedToolUsesFrozenRunSession(t *testing.T) {
+	var checkedSession string
+	policy := permission.PolicyFunc{PolicyVersion: policyVersion, EvaluateFunc: func(_ context.Context, request permission.CheckRequest, _ []permission.Grant) (permission.CheckResult, error) {
+		checkedSession = request.SessionRef
+		return permission.CheckResult{Decision: permission.DecisionAllow, PolicyVersion: request.PolicyVersion, InputDigest: request.InputDigest}, nil
+	}}
+	service, err := permission.NewService(permission.ServiceOptions{Policy: policy, Store: permission.NewMemoryStore()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := &fixedTool{}
+	tool := &authorizedTool{tool: inner, permission: service, action: "workspace.write", sessionID: func() string { return "ui-session" }, resource: func(string) permission.Resource { return permission.Resource{Kind: "file", Key: "file.go"} }}
+	ctx := withRunContext(context.Background(), "run", "run-session", nil)
+	if _, err := tool.Execute(ctx, agent.ToolInvocation{CallID: "call", Name: "write_file", RawInput: `{}`}); err != nil {
+		t.Fatal(err)
+	}
+	if checkedSession != "run-session" {
+		t.Fatalf("permission session = %q", checkedSession)
 	}
 }
 

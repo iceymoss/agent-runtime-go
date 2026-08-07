@@ -209,7 +209,7 @@ func (a *App) RunWithApproval(ctx context.Context, instruction string, observe f
 		return nil, err
 	}
 	requestID := digest([]byte(sessionID + "\x00" + fmt.Sprint(snapshot.Revision) + "\x00" + instruction))
-	ctx = withRunContext(ctx, requestID, approve)
+	ctx = withRunContext(ctx, requestID, sessionID, approve)
 	normalized, err := agentcontext.NormalizeHistory(agentcontext.NormalizeRequest{Messages: history, Policy: agentcontext.RepairReject})
 	if err != nil {
 		return nil, err
