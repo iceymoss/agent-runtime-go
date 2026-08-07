@@ -140,7 +140,7 @@ func TestAppRunsToolLoopAndCommitsTurn(t *testing.T) {
 		t.Fatalf("stored session = %#v, history = %#v", snapshot, history)
 	}
 	events, err := app.store.ReplayEvents(context.Background(), "integration", 0, 10)
-	if err != nil || len(events) != 1 || events[0].Type != "agent.run.terminal" {
+	if err != nil || len(events) != 2 || events[0].Type != "agent.run.started" || events[1].Type != "agent.run.completed" {
 		t.Fatalf("events = %#v, error = %v", events, err)
 	}
 }
@@ -183,5 +183,25 @@ func TestAppHistoryFollowsActiveSession(t *testing.T) {
 	alpha, err := app.History(context.Background())
 	if err != nil || len(alpha) != 2 || alpha[0].Text() != "alpha-question" {
 		t.Fatalf("alpha history = %#v, %v", alpha, err)
+	}
+}
+
+func TestAppPersistsFailedRunTerminalEvent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = response.Write([]byte(`{"error":{"message":"temporarily unavailable"}}`))
+	}))
+	defer server.Close()
+	app, err := NewApp(context.Background(), Config{APIKey: "fixture-key", BaseURL: server.URL, Model: "fixture", Workspace: t.TempDir(), Database: filepath.Join(t.TempDir(), "icoder.db"), SessionID: "failed-run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = app.Close(context.Background()) }()
+	if _, err := app.Run(context.Background(), "fail", nil); err == nil {
+		t.Fatal("Run() returned no error")
+	}
+	events, err := app.store.ReplayEvents(context.Background(), "failed-run", 0, 10)
+	if err != nil || len(events) != 2 || events[0].Type != "agent.run.started" || events[1].Type != "agent.run.failed" {
+		t.Fatalf("ReplayEvents() = %#v, %v", events, err)
 	}
 }

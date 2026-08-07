@@ -265,10 +265,26 @@ func (a *App) RunWithApproval(ctx context.Context, instruction string, observe f
 	if err != nil {
 		return nil, err
 	}
+	if err := a.store.AppendRunEvent(ctx, sessionID, requestID+":started", "agent.run.started", map[string]any{"revision": snapshot.Revision, "input_digest": digest([]byte(instruction))}); err != nil {
+		return nil, err
+	}
 	emitter := agent.NewObservationEmitter(64, observe)
 	result, runErr := a.runner.Run(ctx, agent.RunRequest{Messages: plan.Messages(), ObservationEmitter: emitter})
 	emitter.Close()
 	if runErr != nil {
+		eventType := "agent.run.failed"
+		if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+			eventType = "agent.run.canceled"
+		}
+		payload := map[string]any{"error": runErr.Error()}
+		if result != nil {
+			payload["outcome"], payload["stop_reason"], payload["usage"] = result.Outcome, result.StopReason, result.Usage
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		if eventErr := a.store.AppendRunEvent(cleanupCtx, sessionID, requestID+":terminal", eventType, payload); eventErr != nil {
+			return result, errorsJoin(runErr, eventErr)
+		}
 		return result, runErr
 	}
 	if err := a.store.CommitTurn(ctx, snapshot, requestID, digest([]byte(instruction)), agent.NewUserMessage(instruction), *result); err != nil {

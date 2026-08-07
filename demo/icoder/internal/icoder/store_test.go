@@ -35,7 +35,7 @@ func TestStoreCommitTurnAndIdempotency(t *testing.T) {
 		t.Fatalf("Load() = %#v, %#v, %v", updated, history, err)
 	}
 	events, err := store.ReplayEvents(ctx, "session", 0, 10)
-	if err != nil || len(events) != 1 || events[0].Sequence != 1 {
+	if err != nil || len(events) != 1 || events[0].Sequence != 1 || events[0].Type != "agent.run.completed" {
 		t.Fatalf("ReplayEvents() = %#v, %v", events, err)
 	}
 }
@@ -166,5 +166,30 @@ func TestStorePersistsTaskStateWithTurn(t *testing.T) {
 	state, err = store.LoadTaskState(ctx, "task-state")
 	if err != nil || state != nil {
 		t.Fatalf("LoadTaskState() after clear = %#v, %v", state, err)
+	}
+}
+
+func TestStoreAppendRunEventIsIdempotentAndOrdered(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "icoder.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if _, _, err := store.Load(ctx, "events"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendRunEvent(ctx, "events", "run:started", "agent.run.started", map[string]any{"value": 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendRunEvent(ctx, "events", "run:started", "agent.run.started", map[string]any{"value": 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendRunEvent(ctx, "events", "run:terminal", "agent.run.failed", map[string]any{"error": "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.ReplayEvents(ctx, "events", 0, 10)
+	if err != nil || len(events) != 2 || events[0].Sequence != 1 || events[1].Sequence != 2 || events[1].Type != "agent.run.failed" {
+		t.Fatalf("ReplayEvents() = %#v, %v", events, err)
 	}
 }

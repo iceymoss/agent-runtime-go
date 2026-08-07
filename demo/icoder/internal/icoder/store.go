@@ -304,7 +304,7 @@ func (s *Store) CommitTurn(ctx context.Context, snapshot SessionSnapshot, reques
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO icoder_events(session_id, sequence, event_id, event_type, payload, occurred_at) VALUES(?, ?, ?, ?, ?, ?)`, snapshot.ID, snapshot.Revision+1, requestID+":terminal", "agent.run.terminal", payload, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if err := appendEventTx(ctx, tx, snapshot.ID, requestID+":terminal", "agent.run.completed", payload); err != nil {
 		return err
 	}
 	summary := summarizeRun(result.Messages)
@@ -320,6 +320,31 @@ func (s *Store) CommitTurn(ctx context.Context, snapshot SessionSnapshot, reques
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Store) AppendRunEvent(ctx context.Context, sessionID, eventID, eventType string, payload any) error {
+	data, err := marshalString(payload)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := appendEventTx(ctx, tx, sessionID, eventID, eventType, data); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func appendEventTx(ctx context.Context, tx *sql.Tx, sessionID, eventID, eventType, payload string) error {
+	var sequence uint64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence) + 1, 1) FROM icoder_events WHERE session_id = ?`, sessionID).Scan(&sequence); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO icoder_events(session_id, sequence, event_id, event_type, payload, occurred_at) VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(event_id) DO NOTHING`, sessionID, sequence, eventID, eventType, payload, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
 }
 
 func (s *Store) LoadTaskState(ctx context.Context, sessionID string) (*TaskState, error) {

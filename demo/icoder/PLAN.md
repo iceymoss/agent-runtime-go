@@ -139,7 +139,7 @@
 
 任务：
 
-- 持久化 run started/completed/failed/canceled。
+- [x] 持久化 run started/completed/failed/canceled。
 - 持久化 model step、tool call/result、approval 和 usage facts。
 - 使用 event/outbox，而不是依赖 lossy Observation。
 - 增加 retryable model error 的 backoff、jitter 和 Retry-After。
