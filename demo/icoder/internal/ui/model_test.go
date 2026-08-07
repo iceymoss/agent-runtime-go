@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -136,5 +137,33 @@ func TestNarrowStatusHidesShortcutHints(t *testing.T) {
 	status := model.statusView()
 	if !strings.Contains(status, "ready") || strings.Contains(status, "commands") || lipgloss.Width(status) > model.contentWidth() {
 		t.Fatalf("status = %q width=%d", status, lipgloss.Width(status))
+	}
+}
+
+func TestApprovalViewCapsWidthAndSummarizesTarget(t *testing.T) {
+	model := Model{width: 300, pending: &approvalEvent{prompt: icoder.ApprovalPrompt{
+		ToolName: "create_directory", Action: "workspace.write", Resource: "/home/jeff/icey/open-source/agent-runtime-go/demo/icoder",
+		Input: `{"parents":true,"path":"rust_beginner/src"}`, ExpiresAt: time.Date(2026, 8, 7, 17, 47, 36, 0, time.Local),
+	}}}
+	view := model.approvalView()
+	if lipgloss.Width(view) > 76 || !strings.Contains(view, "target") || !strings.Contains(view, "rust_beginner/src") || !strings.Contains(view, "parents") || strings.Contains(view, `"path"`) {
+		t.Fatalf("approval width=%d view=%q", lipgloss.Width(view), view)
+	}
+}
+
+func TestNarrowApprovalStacksActions(t *testing.T) {
+	model := Model{width: 40, pending: &approvalEvent{prompt: icoder.ApprovalPrompt{ToolName: "run_command", Action: "command.execute", Resource: "workspace", Input: `{}`}}}
+	view := model.approvalView()
+	allowLine, rejectLine := -1, -1
+	for index, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "allow once") {
+			allowLine = index
+		}
+		if strings.Contains(line, "reject") {
+			rejectLine = index
+		}
+	}
+	if lipgloss.Width(view) > model.contentWidth() || allowLine < 0 || rejectLine != allowLine+1 {
+		t.Fatalf("approval width=%d contentWidth=%d view=%q", lipgloss.Width(view), model.contentWidth(), view)
 	}
 }

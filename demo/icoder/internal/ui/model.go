@@ -565,17 +565,67 @@ func (m *Model) cancelRun() {
 
 func (m Model) approvalView() string {
 	p := m.pending.prompt
-	meta := toolStyle.Render(p.ToolName) + "  " + dimStyle.Render(p.Action)
-	resource := "resource  " + p.Resource
+	panelWidth := min(72, max(16, m.contentWidth()-4))
+	heading := warningStyle.Bold(true).Render("Permission required")
 	if !p.ExpiresAt.IsZero() {
-		resource += "\nexpires   " + p.ExpiresAt.Local().Format("15:04:05")
+		expires := dimStyle.Render("expires " + p.ExpiresAt.Local().Format("15:04:05"))
+		if lipgloss.Width(heading)+lipgloss.Width(expires)+2 <= panelWidth {
+			heading += strings.Repeat(" ", panelWidth-lipgloss.Width(heading)-lipgloss.Width(expires)) + expires
+		}
 	}
-	actions := success.Render("y / enter  allow once") + "    " + errorStyle.Render("n / esc  reject") + "    " + dimStyle.Render("ctrl+c  cancel")
+	meta := toolStyle.Render(p.ToolName) + "  " + dimStyle.Render(p.Action)
+	details := approvalDetails(p, panelWidth)
+	actions := approvalActions(panelWidth)
 	if m.pending.submitted {
 		actions = warningStyle.Render(m.spinner.View()+" Checking approval status") + "    " + dimStyle.Render("ctrl+c  cancel")
 	}
-	content := warningStyle.Bold(true).Render("Permission required") + "\n" + meta + "\n\n" + dimStyle.Render(resource) + "\n\n" + truncate(prettyJSON(p.Input), 3000) + "\n\n" + actions
-	return lipgloss.NewStyle().Width(max(16, m.contentWidth()-4)).Padding(1, 1).Border(lipgloss.RoundedBorder()).BorderForeground(warningStyle.GetForeground()).Render(content)
+	content := heading + "\n" + meta + "\n\n" + details + "\n\n" + actions
+	return lipgloss.NewStyle().Width(panelWidth).Padding(1, 1).Border(lipgloss.RoundedBorder()).BorderForeground(warningStyle.GetForeground()).Render(content)
+}
+
+func approvalDetails(prompt icoder.ApprovalPrompt, width int) string {
+	var input map[string]any
+	if json.Unmarshal([]byte(prompt.Input), &input) != nil {
+		return dimStyle.Render("scope   "+truncateLine(prompt.Resource, max(8, width-8))) + "\n" + truncate(prompt.Input, 1000)
+	}
+	lines := make([]string, 0, len(input)+1)
+	if target, ok := input["path"].(string); ok && target != "" {
+		lines = append(lines, fieldLine("target", target, width))
+		delete(input, "path")
+	}
+	if prompt.Resource != "" {
+		lines = append(lines, fieldLine("scope", prompt.Resource, width))
+	}
+	keys := make([]string, 0, len(input))
+	for key := range input {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value, err := json.Marshal(input[key])
+		if err != nil {
+			continue
+		}
+		lines = append(lines, fieldLine(key, strings.Trim(string(value), `"`), width))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func fieldLine(label, value string, width int) string {
+	const labelWidth = 9
+	label = truncateLine(label, labelWidth-1)
+	prefix := dimStyle.Render(fmt.Sprintf("%-*s", labelWidth, label))
+	return prefix + truncateLine(value, max(4, width-labelWidth))
+}
+
+func approvalActions(width int) string {
+	allow := success.Render("y / enter  allow once")
+	reject := errorStyle.Render("n / esc  reject")
+	cancel := dimStyle.Render("ctrl+c  cancel")
+	if width < 58 {
+		return allow + "\n" + reject + "\n" + cancel
+	}
+	return allow + "    " + reject + "    " + cancel
 }
 func (m Model) statusView() string {
 	left, right := "", ""
