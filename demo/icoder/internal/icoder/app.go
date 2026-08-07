@@ -133,7 +133,7 @@ func NewApp(ctx context.Context, config Config) (app *App, resultErr error) {
 		return nil, err
 	}
 	allowedTools := registry.Names()
-	mcpManager, mcpTools, err := registerMCP(ctx, registry, config.MCPURL)
+	mcpManager, mcpTools, err := registerMCP(ctx, registry, config.MCPURL, permissions, state.Get)
 	if err != nil {
 		return nil, err
 	}

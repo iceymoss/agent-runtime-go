@@ -11,6 +11,7 @@ import (
 
 	"github.com/iceymoss/agent-runtime-go"
 	"github.com/iceymoss/agent-runtime-go/mcp"
+	"github.com/iceymoss/agent-runtime-go/permission"
 	"github.com/iceymoss/agent-runtime-go/subagent"
 )
 
@@ -51,7 +52,7 @@ func (t *mcpAgentTool) Execute(ctx context.Context, invocation agent.ToolInvocat
 	return agent.ToolResult{Content: data, IsError: result.IsError}, nil
 }
 
-func registerMCP(ctx context.Context, registry *agent.Registry, endpoint string) (mcp.Manager, []string, error) {
+func registerMCP(ctx context.Context, registry *agent.Registry, endpoint string, permissions permission.Service, sessionID func() string) (mcp.Manager, []string, error) {
 	if endpoint == "" {
 		return nil, nil, nil
 	}
@@ -84,7 +85,10 @@ func registerMCP(ctx context.Context, registry *agent.Registry, endpoint string)
 	for _, server := range snapshot.Servers {
 		for _, definition := range server.Tools {
 			tool := &mcpAgentTool{manager: manager, scope: scope, generation: snapshot.Generation, serverID: server.ID, definition: definition.AgentDefinition(), upstream: definition.Name}
-			if err := registry.Register(tool); err != nil {
+			wrapped := &authorizedTool{tool: tool, permission: permissions, action: "network.tool", sessionID: sessionID, resource: func(string) permission.Resource {
+				return permission.Resource{Kind: "mcp-tool", Key: string(server.ID) + "/" + definition.Name}
+			}}
+			if err := registry.Register(wrapped); err != nil {
 				return nil, nil, err
 			}
 			names = append(names, definition.Canonical)

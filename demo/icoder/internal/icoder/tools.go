@@ -139,7 +139,7 @@ func NewPermissionService(allowWrites bool) (permission.Service, error) {
 		switch request.Action {
 		case "workspace.read", "workspace.search", "network.read", "subagent.spawn":
 			result.Decision, result.RuleKey = permission.DecisionAllow, "safe-local-operation"
-		case "workspace.write", "workspace.command":
+		case "workspace.write", "workspace.command", "network.tool":
 			if allowWrites {
 				result.Decision, result.RuleKey = permission.DecisionAllow, "cli-write-flag"
 			} else {

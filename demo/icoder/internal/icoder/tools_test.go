@@ -38,6 +38,21 @@ func TestAuthorizedToolDeniesWhenApprovalUnavailable(t *testing.T) {
 	}
 }
 
+func TestUnknownMCPToolRequiresApproval(t *testing.T) {
+	service, err := NewPermissionService(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := &fixedTool{}
+	tool := &authorizedTool{tool: inner, permission: service, action: "network.tool", sessionID: func() string { return "session" }, resource: func(string) permission.Resource {
+		return permission.Resource{Kind: "mcp-tool", Key: "server/tool"}
+	}}
+	result, err := tool.Execute(context.Background(), agent.ToolInvocation{CallID: "mcp-call", Name: "mcp_server_tool", RawInput: `{}`})
+	if err != nil || !result.IsError || !result.StopTurn || inner.calls != 0 || !strings.Contains(result.Content, "approval is unavailable") {
+		t.Fatalf("result = %#v, calls = %d, error = %v", result, inner.calls, err)
+	}
+}
+
 func TestAuthorizedToolExecutesAfterApproval(t *testing.T) {
 	service, err := NewPermissionService(false)
 	if err != nil {
