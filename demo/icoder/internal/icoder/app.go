@@ -2,6 +2,7 @@ package icoder
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -32,6 +33,7 @@ type App struct {
 	runner       *agent.Agent
 	store        *Store
 	planner      agentcontext.Planner
+	compactor    *agentcontext.Compactor
 	prompt       *prompt.Prompt
 	capabilities []agent.Message
 	tools        []string
@@ -161,10 +163,18 @@ func NewApp(ctx context.Context, config Config) (app *App, resultErr error) {
 	if err != nil {
 		return nil, err
 	}
+	generator, ok := any(model).(agent.Generator)
+	if !ok {
+		return nil, fmt.Errorf("model does not support context summarization")
+	}
+	compactor, err := agentcontext.NewCompactor(agentcontext.CompactionOptions{Summarizer: &modelSummarizer{generator: generator, model: config.Model}, Artifacts: contextArtifactStore{store: store}, Counter: byteCounter{}, Clock: time.Now, MinSavings: 64})
+	if err != nil {
+		return nil, err
+	}
 	closeStore = false
 	closeMCP = false
 	closeSkills = false
-	return &App{config: config, state: state, workspace: workspace, model: model, runner: runner, store: store, planner: planner, prompt: basePrompt, capabilities: capabilityMessages, tools: allowedTools, mcp: mcpManager, skills: skillCatalog}, nil
+	return &App{config: config, state: state, workspace: workspace, model: model, runner: runner, store: store, planner: planner, compactor: compactor, prompt: basePrompt, capabilities: capabilityMessages, tools: allowedTools, mcp: mcpManager, skills: skillCatalog}, nil
 }
 
 func (a *App) Close(ctx context.Context) error {
@@ -218,13 +228,29 @@ func (a *App) RunWithApproval(ctx context.Context, instruction string, observe f
 	}
 	capabilityMessages := append([]agent.Message(nil), a.capabilities...)
 	capabilityMessages = append(capabilityMessages, projectInstructions...)
-	plan, err := a.planner.Prepare(ctx, agentcontext.PrepareRequest{
+	request := agentcontext.PrepareRequest{
 		// Bind the plan to the invocation revision that CommitTurn will publish.
 		Source:           agentcontext.SourceRef{TenantKey: "local", SessionKey: sessionID, SessionRevision: snapshot.Revision + 1},
 		Runtime:          agentcontext.RuntimeArtifacts{DefinitionDigest: runtimeDigest, ProjectionVersion: "openai-chat-completions/v1", TokenizerID: byteCounter{}.ID(), SystemMessages: []agent.Message{agent.NewSystemMessage(renderedPrompt)}, CapabilityMessages: capabilityMessages, ExecutionPolicy: string(policyVersion), ExecutionPolicyDigest: digest([]byte(policyVersion))},
 		MainlineMessages: normalized.Messages, InvocationMessages: []agent.Message{agent.NewUserMessage(instruction)},
 		Budget: agentcontext.Budget{ContextTokens: a.config.ContextWindow, ReservedOutputTokens: a.config.MaxTokens, SafetyMarginTokens: 1024, ToolSchemaTokens: 2048},
-	})
+	}
+	if snapshot.Pivot != nil {
+		artifact, err := (contextArtifactStore{store: a.store}).Get(ctx, "local", snapshot.Pivot.Artifact)
+		if err != nil {
+			return nil, err
+		}
+		if artifact.Source().SessionKey != sessionID || artifact.CoveredThrough() != snapshot.Pivot.CoveredThrough || artifact.SourceDigest() != snapshot.Pivot.SourceDigest || artifact.ProtectedFactSet().Digest != snapshot.Pivot.FactSetDigest || artifact.CoveredThrough() > snapshot.Revision {
+			return nil, fmt.Errorf("stored context pivot does not match its artifact")
+		}
+		tail, err := a.store.MessagesAfterRevision(ctx, sessionID, snapshot.Pivot.CoveredThrough)
+		if err != nil {
+			return nil, err
+		}
+		request.Pivot, request.SummaryMessages, request.MainlineMessages = snapshot.Pivot, artifact.Messages(), tail
+		request.Artifacts = []agentcontext.ArtifactRef{artifact.Ref()}
+	}
+	plan, err := a.prepareContext(ctx, snapshot, runtimeDigest, request)
 	if err != nil {
 		return nil, err
 	}
@@ -238,6 +264,51 @@ func (a *App) RunWithApproval(ctx context.Context, instruction string, observe f
 		return result, err
 	}
 	return result, nil
+}
+
+func (a *App) prepareContext(ctx context.Context, snapshot SessionSnapshot, runtimeDigest string, request agentcontext.PrepareRequest) (agentcontext.Plan, error) {
+	plan, err := a.planner.Prepare(ctx, request)
+	if !errors.Is(err, agentcontext.ErrCompactionRequired) {
+		return plan, err
+	}
+	fixed := append([]agent.Message(nil), request.Runtime.SystemMessages...)
+	fixed = append(fixed, request.Runtime.CapabilityMessages...)
+	fixed = append(fixed, request.InvocationMessages...)
+	fixedTokens, countErr := (byteCounter{}).CountTokens(ctx, fixed)
+	if countErr != nil {
+		return agentcontext.Plan{}, countErr
+	}
+	target := request.Budget.InputLimit() - request.Budget.ToolSchemaTokens - request.Budget.MediaTokens - fixedTokens
+	if target <= 0 || snapshot.Revision < 2 {
+		return agentcontext.Plan{}, err
+	}
+	coveredThrough := snapshot.Revision - 1
+	if request.Pivot != nil && coveredThrough <= request.Pivot.CoveredThrough {
+		return agentcontext.Plan{}, err
+	}
+	messages := append([]agent.Message(nil), request.SummaryMessages...)
+	messages = append(messages, request.MainlineMessages...)
+	var predecessor *agentcontext.ArtifactRef
+	if request.Pivot != nil {
+		value := request.Pivot.Artifact
+		predecessor = &value
+	}
+	compacted, compactErr := a.compactor.Compact(ctx, agentcontext.CompactRequest{Source: request.Source, Messages: messages, ProtectedFacts: request.ProtectedFacts, Predecessor: predecessor, RuntimeDigest: runtimeDigest, TargetTokens: target, CoveredThrough: coveredThrough})
+	if compactErr != nil {
+		return agentcontext.Plan{}, compactErr
+	}
+	request.Pivot = &compacted.Pivot
+	request.SummaryMessages = compacted.Artifact.Messages()
+	request.MainlineMessages = compacted.Kept
+	request.Artifacts = []agentcontext.ArtifactRef{compacted.Artifact.Ref()}
+	plan, err = a.planner.Prepare(ctx, request)
+	if err != nil {
+		return agentcontext.Plan{}, err
+	}
+	if err := a.store.SavePivot(ctx, snapshot, compacted.Pivot); err != nil {
+		return agentcontext.Plan{}, err
+	}
+	return plan, nil
 }
 
 func (a *App) Events(ctx context.Context, after uint64) ([]string, error) {
