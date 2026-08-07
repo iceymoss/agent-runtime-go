@@ -146,6 +146,8 @@
 - [x] 冻结 run-scoped tenant/session/revision/runtime generation。
 - 接入高级 tool executor 和 effect ledger，表达 unknown effect。
 
+依赖说明：高级 tool executor 的 approval blocker 必须与 M5 的 SessionAgent suspend/resume 一起接入。M3 保留同步 TUI permission wrapper 和可靠事件，不以普通 tool error 模拟 durable suspension。
+
 验收：
 
 - 模型失败、命令超时和用户取消都有可回放终态。
