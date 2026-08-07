@@ -140,6 +140,8 @@ icoder version                 显示版本
 
 默认情况下，TUI 会在写入或执行命令前显示三项审批列表：`1. Yes`、`2. Yes, allow <具体范围> for this session` 和 `3. No`。使用上下方向键遍历，`Tab` 在单次允许和 scoped AUTO 间快速切换，`Enter` 确认；`1`、`2`、`3` 可直接确认对应选项，`y` 和 `n` 是 Yes/No 快捷键。scoped AUTO 只允许当前 session 中同一类 action，例如 workspace writes 不会同时放开 commands 或 network；状态栏会持续显示已启用的 `AUTO writes`、`AUTO commands` 等范围。使用 `/permissions` 查看当前 session 的范围，`/permissions clear` 撤销。每个自动批准的调用仍绑定 tool call、输入 digest 和当前 run，并执行 Resolve/Revalidate。审批默认有效 15 分钟，确认后进入验证状态并锁定任务输入。若审批已过期，工具不会执行；重新提交原任务即可生成新的审批请求。
 
+选择 `3. No` 后，底部区域会切换为反馈输入。输入替代方案并按 `Enter` 后，iCoder 会先完成当前拒绝 turn，再在同一 session 中自动继续该反馈。正常运行期间也可以在底部输入下一条指令；`Enter` 将其加入队列，当前 run 结束后按顺序执行。排队不会修改正在执行的模型上下文，也不会批准被拒绝的工具调用。
+
 非交互 `run` 不会从 stdin 隐式询问审批，默认安全拒绝副作用。确认工作区可信后，可以为当前进程开启所有本地写入和受限命令：
 
 ```bash

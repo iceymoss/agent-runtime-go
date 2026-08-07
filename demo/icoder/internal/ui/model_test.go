@@ -101,13 +101,49 @@ func TestModelAutoApprovalScopesAreActionSpecific(t *testing.T) {
 	}
 }
 
-func TestModelDoesNotBufferTaskInputWhileRunning(t *testing.T) {
+func TestModelQueuesFollowUpWhileRunning(t *testing.T) {
 	model := New(context.Background(), nil, nil)
 	model.running = true
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	model = updated.(Model)
-	if model.input.Value() != "" {
-		t.Fatalf("running input = %q, want empty", model.input.Value())
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if model.input.Value() != "" || len(model.queuedPrompts) != 1 || model.queuedPrompts[0] != "y" || !strings.Contains(model.statusView(), "1 queued") {
+		t.Fatalf("input=%q queued=%v status=%q", model.input.Value(), model.queuedPrompts, model.statusView())
+	}
+}
+
+func TestModelCollectsDenialFeedbackAndContinuesAfterRun(t *testing.T) {
+	response := make(chan icoder.ApprovalDecision, 1)
+	model := New(context.Background(), nil, nil)
+	model.running = true
+	model.pending = &approvalEvent{respond: response, prompt: icoder.ApprovalPrompt{Action: "workspace.write"}}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	model = updated.(Model)
+	if !model.feedbackMode || !strings.Contains(model.footerView(), "Tell iCoder what to do instead") {
+		t.Fatalf("feedbackMode=%v footer=%q", model.feedbackMode, model.footerView())
+	}
+	select {
+	case decision := <-response:
+		if decision != icoder.ApprovalDeny {
+			t.Fatalf("decision=%q", decision)
+		}
+	default:
+		t.Fatal("denial was not sent")
+	}
+	for _, r := range "use the existing directory" {
+		updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		model = updated.(Model)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if model.feedbackMode || len(model.queuedPrompts) != 1 {
+		t.Fatalf("feedbackMode=%v queued=%v", model.feedbackMode, model.queuedPrompts)
+	}
+	updated, _ = model.Update(runEvent{result: &agent.RunResult{}})
+	model = updated.(Model)
+	if !model.running || len(model.queuedPrompts) != 0 || len(model.items) == 0 || model.items[len(model.items)-1].content != "use the existing directory" {
+		t.Fatalf("running=%v queued=%v items=%#v", model.running, model.queuedPrompts, model.items)
 	}
 }
 

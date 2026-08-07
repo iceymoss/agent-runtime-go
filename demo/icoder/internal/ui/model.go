@@ -31,6 +31,12 @@ var (
 	dimStyle     = lipgloss.NewStyle().Foreground(muted)
 )
 
+const (
+	defaultInputPlaceholder  = `Try "fix lint errors"`
+	queuedInputPlaceholder   = "Queue a follow-up"
+	feedbackInputPlaceholder = "Tell iCoder what to do instead"
+)
+
 type itemKind string
 type itemState string
 
@@ -96,6 +102,8 @@ type Model struct {
 	follow        bool
 	pending       *approvalEvent
 	approvalIndex int
+	feedbackMode  bool
+	queuedPrompts []string
 	autoScopes    map[string]bool
 	started       time.Time
 	latestStatus  string
@@ -123,7 +131,7 @@ var slashCommands = []struct{ name, description string }{
 
 func New(ctx context.Context, app *icoder.App, history []agent.Message) Model {
 	input := textarea.New()
-	input.Placeholder, input.Prompt = "Try \"fix lint errors\"", "❯ "
+	input.Placeholder, input.Prompt = defaultInputPlaceholder, "❯ "
 	input.SetHeight(1)
 	input.CharLimit, input.ShowLineNumbers = 32<<10, false
 	input.Focus()
@@ -171,7 +179,46 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if m.pending != nil {
+		if m.feedbackMode {
+			switch msg.String() {
+			case "ctrl+c":
+				m.feedbackMode = false
+				m.input.Reset()
+				if m.running {
+					m.input.Placeholder = queuedInputPlaceholder
+				} else {
+					m.input.Placeholder = defaultInputPlaceholder
+				}
+				m.cancelRun()
+				return m, nil
+			case "esc":
+				m.feedbackMode = false
+				m.input.Reset()
+				if m.running {
+					m.input.Placeholder = queuedInputPlaceholder
+				} else {
+					m.input.Placeholder = defaultInputPlaceholder
+				}
+				m.latestStatus = "permission denied"
+				return m, nil
+			case "enter":
+				value := strings.TrimSpace(m.input.Value())
+				if value == "" {
+					return m, nil
+				}
+				m.input.Reset()
+				m.feedbackMode = false
+				if m.running {
+					m.input.Placeholder = queuedInputPlaceholder
+					m.queuedPrompts = append(m.queuedPrompts, value)
+					m.latestStatus = "feedback queued"
+					return m, nil
+				}
+				commands = append(commands, m.beginPrompt(value)...)
+				return m, tea.Batch(commands...)
+			}
+		}
+		if m.pending != nil && !m.feedbackMode {
 			if m.pending.submitted {
 				if msg.String() == "ctrl+c" {
 					m.cancelRun()
@@ -259,6 +306,15 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case "enter":
+			if m.running {
+				value := strings.TrimSpace(m.input.Value())
+				if value != "" {
+					m.input.Reset()
+					m.queuedPrompts = append(m.queuedPrompts, value)
+					m.latestStatus = fmt.Sprintf("%d follow-up queued", len(m.queuedPrompts))
+				}
+				return m, nil
+			}
 			if !m.running {
 				if suggestions := m.commandSuggestions(); len(suggestions) > 0 && !m.exactCommand() && !strings.Contains(strings.TrimPrefix(m.input.Value(), "/"), " ") {
 					m.input.SetValue(strings.Fields(suggestions[m.commandIndex].name)[0] + " ")
@@ -272,12 +328,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 					if strings.HasPrefix(value, "/") {
 						return m, m.slashCommand(value)
 					}
-					m.items = append(m.items, transcriptItem{kind: itemUser, content: value})
-					m.streamed, m.running, m.follow, m.started = "", true, true, time.Now()
-					runCtx, cancel := context.WithCancel(m.ctx)
-					m.cancel = cancel
-					m.syncViewport(true)
-					commands = append(commands, m.spinner.Tick, m.startRun(runCtx, value), waitEvent(m.events))
+					commands = append(commands, m.beginPrompt(value)...)
 				}
 				return m, tea.Batch(commands...)
 			}
@@ -293,6 +344,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, waitEvent(m.events)
 		}
 		m.running, m.pending = false, nil
+		if !m.feedbackMode {
+			m.input.Placeholder = defaultInputPlaceholder
+		}
 		if m.cancel != nil {
 			m.cancel()
 			m.cancel = nil
@@ -309,6 +363,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.streamed = ""
 		m.syncViewport(true)
+		if len(m.queuedPrompts) > 0 {
+			next := m.queuedPrompts[0]
+			m.queuedPrompts = m.queuedPrompts[1:]
+			commands = append(commands, m.beginPrompt(next)...)
+		}
 	case commandResult:
 		if msg.clearApprovals {
 			m.clearCurrentApprovalScopes()
@@ -348,7 +407,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	var cmd tea.Cmd
-	if !m.running && !m.sessionPicker {
+	if !m.sessionPicker && (!m.running || m.pending == nil || m.feedbackMode) {
 		m.input, cmd = m.input.Update(message)
 		m.input.SetHeight(min(4, max(1, strings.Count(m.input.Value(), "\n")+1)))
 		commands = append(commands, cmd)
@@ -380,12 +439,15 @@ func (m Model) View() string {
 }
 
 func (m Model) footerView() string {
+	if m.feedbackMode {
+		return m.feedbackView() + "\n" + m.statusView()
+	}
 	if m.pending != nil {
 		return m.approvalView() + "\n" + m.statusView()
 	}
 	composer := m.composerView()
 	if m.running {
-		composer = m.runningView()
+		composer = m.queueView()
 	}
 	view := composer
 	if suggestions := m.commandSuggestions(); len(suggestions) > 0 {
@@ -496,9 +558,14 @@ func (m Model) composerView() string {
 	return rule + "\n" + m.input.View() + "\n" + rule
 }
 
-func (m Model) runningView() string {
+func (m Model) queueView() string {
 	rule := dimStyle.Render(strings.Repeat("─", m.contentWidth()))
-	return rule + "\n" + warningStyle.Render(m.spinner.View()+" Working on this task") + dimStyle.Render(" · input unlocks when the run finishes") + "\n" + rule
+	return rule + "\n" + m.input.View() + "\n" + rule
+}
+
+func (m Model) feedbackView() string {
+	rule := errorStyle.Render(strings.Repeat("─", m.contentWidth()))
+	return errorStyle.Bold(true).Render("Tell iCoder what to do instead") + "\n" + rule + "\n" + m.input.View() + "\n" + rule
 }
 
 func (m *Model) applyObservation(observation agent.Observation) {
@@ -665,6 +732,9 @@ func (m *Model) confirmApproval() {
 		m.grantAutoScope(m.pending.prompt.Action)
 		m.answerApproval(icoder.ApprovalApproveAuto)
 	case 2:
+		m.feedbackMode = true
+		m.input.Reset()
+		m.input.Placeholder = feedbackInputPlaceholder
 		m.answerApproval(icoder.ApprovalDeny)
 	default:
 		m.answerApproval(icoder.ApprovalApproveOnce)
@@ -676,6 +746,16 @@ func (m *Model) cancelRun() {
 	}
 	m.pending = nil
 	m.latestStatus = "cancelling current run..."
+}
+
+func (m *Model) beginPrompt(value string) []tea.Cmd {
+	m.items = append(m.items, transcriptItem{kind: itemUser, content: value})
+	m.streamed, m.running, m.follow, m.started = "", true, true, time.Now()
+	m.input.Placeholder = queuedInputPlaceholder
+	runCtx, cancel := context.WithCancel(m.ctx)
+	m.cancel = cancel
+	m.syncViewport(true)
+	return []tea.Cmd{m.spinner.Tick, m.startRun(runCtx, value), waitEvent(m.events)}
 }
 
 func (m Model) approvalView() string {
@@ -834,7 +914,10 @@ func (m Model) currentApprovalScopes() []string {
 
 func (m Model) statusView() string {
 	left, right := "", ""
-	if m.pending != nil {
+	if m.feedbackMode {
+		left = errorStyle.Render("permission denied")
+		right = dimStyle.Render("enter continue · esc dismiss · ctrl+c cancel")
+	} else if m.pending != nil {
 		if m.pending.submitted {
 			left, right = warningStyle.Render("checking approval"), dimStyle.Render("input locked")
 		} else {
@@ -842,7 +925,10 @@ func (m Model) statusView() string {
 		}
 	} else if m.running {
 		left = warningStyle.Render(m.spinner.View() + " working  " + time.Since(m.started).Round(time.Second).String())
-		right = dimStyle.Render("esc cancel   ctrl+o details")
+		if len(m.queuedPrompts) > 0 {
+			left += dimStyle.Render(fmt.Sprintf(" · %d queued", len(m.queuedPrompts)))
+		}
+		right = dimStyle.Render("enter queue · esc cancel · ctrl+o details")
 	} else {
 		status := m.latestStatus
 		if status == "" {
