@@ -239,6 +239,7 @@ func TestCompactionArtifactPivotAndProtectedContent(t *testing.T) {
 	request := agentcontext.CompactRequest{
 		Source: agentcontext.SourceRef{TenantKey: "tenant/a", SessionKey: "session", SessionRevision: 9},
 		Messages: []agent.Message{
+			agent.NewUserMessage("old user intent"),
 			agent.NewAssistantMessage(strings.Repeat("old", 20)),
 			agent.NewUserMessage("latest user intent"),
 		},

@@ -195,8 +195,9 @@ func (c *Compactor) Compact(ctx stdcontext.Context, request CompactRequest) (Com
 	return CompactResult{Artifact: stored, Pivot: pivot, Kept: kept}, nil
 }
 
-// selectSafePrefix preserves every system boundary, user-intent message, and
-// complete tool exchange. Selection is deterministic and contiguous.
+// selectSafePrefix preserves the latest user turn and any system boundary.
+// Normalization has already guaranteed that tool exchanges are complete, so a
+// user-message boundary cannot split a tool call from its result.
 func selectSafePrefix(messages []agent.Message) int {
 	latestUser := -1
 	for i, message := range messages {
@@ -204,19 +205,19 @@ func selectSafePrefix(messages []agent.Message) int {
 			latestUser = i
 		}
 	}
+	if latestUser == 0 {
+		return 0
+	}
 	limit := latestUser
 	if limit < 0 {
 		limit = len(messages)
 	}
-	cut := 0
-	for cut < limit {
-		message := messages[cut]
-		if message.Role == agent.RoleSystem || message.Role == agent.RoleUser || message.Role == agent.RoleTool || len(message.ToolCalls()) != 0 {
-			break
+	for _, message := range messages[:limit] {
+		if message.Role == agent.RoleSystem {
+			return 0
 		}
-		cut++
 	}
-	return cut
+	return limit
 }
 
 func containsToolContent(messages []agent.Message) bool {
