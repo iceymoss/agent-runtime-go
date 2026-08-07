@@ -63,6 +63,47 @@ func TestModelAnswersApproval(t *testing.T) {
 	}
 }
 
+func TestModelSelectsAutoApprovalWithTab(t *testing.T) {
+	response := make(chan icoder.ApprovalDecision, 1)
+	model := New(context.Background(), nil, nil)
+	model.running = true
+	model.pending = &approvalEvent{respond: response}
+	for range 2 {
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyTab})
+		model = updated.(Model)
+	}
+	if model.approvalIndex != 2 {
+		t.Fatalf("approvalIndex = %d, want Auto", model.approvalIndex)
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if !model.autoApprove || model.pending == nil || !model.pending.submitted {
+		t.Fatalf("autoApprove=%v pending=%#v", model.autoApprove, model.pending)
+	}
+	select {
+	case decision := <-response:
+		if decision != icoder.ApprovalApproveAuto {
+			t.Fatalf("decision = %q", decision)
+		}
+	default:
+		t.Fatal("auto approval response was not sent")
+	}
+}
+
+func TestModelTogglesAutoApprovalWhileIdle(t *testing.T) {
+	model := New(context.Background(), nil, nil)
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(Model)
+	if !model.autoApprove || !strings.Contains(model.statusView(), "AUTO approvals") {
+		t.Fatalf("autoApprove=%v status=%q", model.autoApprove, model.statusView())
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(Model)
+	if model.autoApprove {
+		t.Fatal("auto approval remained enabled")
+	}
+}
+
 func TestModelDoesNotBufferTaskInputWhileRunning(t *testing.T) {
 	model := New(context.Background(), nil, nil)
 	model.running = true
@@ -154,16 +195,16 @@ func TestApprovalViewCapsWidthAndSummarizesTarget(t *testing.T) {
 func TestNarrowApprovalStacksActions(t *testing.T) {
 	model := Model{width: 40, pending: &approvalEvent{prompt: icoder.ApprovalPrompt{ToolName: "run_command", Action: "command.execute", Resource: "workspace", Input: `{}`}}}
 	view := model.approvalView()
-	allowLine, rejectLine := -1, -1
+	choicesLine, hintLine := -1, -1
 	for index, line := range strings.Split(view, "\n") {
-		if strings.Contains(line, "allow once") {
-			allowLine = index
+		if strings.Contains(line, "Yes") && strings.Contains(line, "No") && strings.Contains(line, "Auto") {
+			choicesLine = index
 		}
-		if strings.Contains(line, "reject") {
-			rejectLine = index
+		if strings.Contains(line, "tab select") {
+			hintLine = index
 		}
 	}
-	if lipgloss.Width(view) > model.contentWidth() || allowLine < 0 || rejectLine != allowLine+1 {
+	if lipgloss.Width(view) > model.contentWidth() || choicesLine < 0 || hintLine != choicesLine+1 {
 		t.Fatalf("approval width=%d contentWidth=%d view=%q", lipgloss.Width(view), model.contentWidth(), view)
 	}
 }

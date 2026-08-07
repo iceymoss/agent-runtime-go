@@ -94,6 +94,8 @@ type Model struct {
 	details       bool
 	follow        bool
 	pending       *approvalEvent
+	approvalIndex int
+	autoApprove   bool
 	started       time.Time
 	latestStatus  string
 	commandIndex  int
@@ -175,11 +177,22 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			switch msg.String() {
-			case "y", "1", "enter":
-				m.answerApproval(icoder.ApprovalApproveOnce)
+			case "tab", "right", "l":
+				m.approvalIndex = (m.approvalIndex + 1) % 3
+				return m, nil
+			case "shift+tab", "left", "h":
+				m.approvalIndex = (m.approvalIndex + 2) % 3
+				return m, nil
+			case "y", "1":
+				m.approvalIndex = 0
+				m.confirmApproval()
 				return m, waitEvent(m.events)
 			case "n", "2", "esc":
-				m.answerApproval(icoder.ApprovalDeny)
+				m.approvalIndex = 1
+				m.confirmApproval()
+				return m, waitEvent(m.events)
+			case "enter":
+				m.confirmApproval()
 				return m, waitEvent(m.events)
 			case "ctrl+c":
 				m.cancelRun()
@@ -208,6 +221,16 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.details = !m.details
 			m.syncViewport(false)
 			return m, nil
+		case "tab":
+			if !m.running {
+				m.autoApprove = !m.autoApprove
+				if m.autoApprove {
+					m.latestStatus = "AUTO approvals enabled"
+				} else {
+					m.latestStatus = "manual approvals enabled"
+				}
+				return m, nil
+			}
 		case "ctrl+p":
 			if !m.running {
 				m.input.SetValue("/")
@@ -258,7 +281,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case runEvent:
 		if msg.approval != nil {
-			m.pending, m.latestStatus = msg.approval, "approval required for "+msg.approval.prompt.ToolName
+			m.pending, m.approvalIndex, m.latestStatus = msg.approval, 0, "approval required for "+msg.approval.prompt.ToolName
 			return m, waitEvent(m.events)
 		}
 		if msg.observation != nil {
@@ -555,6 +578,17 @@ func (m *Model) answerApproval(decision icoder.ApprovalDecision) {
 	}
 	m.latestStatus = "checking approval"
 }
+func (m *Model) confirmApproval() {
+	switch m.approvalIndex {
+	case 1:
+		m.answerApproval(icoder.ApprovalDeny)
+	case 2:
+		m.autoApprove = true
+		m.answerApproval(icoder.ApprovalApproveAuto)
+	default:
+		m.answerApproval(icoder.ApprovalApproveOnce)
+	}
+}
 func (m *Model) cancelRun() {
 	if m.cancel != nil {
 		m.cancel()
@@ -575,7 +609,7 @@ func (m Model) approvalView() string {
 	}
 	meta := toolStyle.Render(p.ToolName) + "  " + dimStyle.Render(p.Action)
 	details := approvalDetails(p, panelWidth)
-	actions := approvalActions(panelWidth)
+	actions := approvalActions(panelWidth, m.approvalIndex)
 	if m.pending.submitted {
 		actions = warningStyle.Render(m.spinner.View()+" Checking approval status") + "    " + dimStyle.Render("ctrl+c  cancel")
 	}
@@ -618,14 +652,25 @@ func fieldLine(label, value string, width int) string {
 	return prefix + truncateLine(value, max(4, width-labelWidth))
 }
 
-func approvalActions(width int) string {
-	allow := success.Render("y / enter  allow once")
-	reject := errorStyle.Render("n / esc  reject")
-	cancel := dimStyle.Render("ctrl+c  cancel")
-	if width < 58 {
-		return allow + "\n" + reject + "\n" + cancel
+func approvalActions(width, selected int) string {
+	choices := []struct {
+		label string
+		style lipgloss.Style
+	}{{"Yes", success}, {"No", errorStyle}, {"Auto", warningStyle}}
+	values := make([]string, len(choices))
+	for index, choice := range choices {
+		label := "  " + choice.label + "  "
+		if index == selected {
+			values[index] = choice.style.Copy().Bold(true).Reverse(true).Render(label)
+		} else {
+			values[index] = choice.style.Render(label)
+		}
 	}
-	return allow + "    " + reject + "    " + cancel
+	hint := dimStyle.Render("tab select  enter confirm")
+	if width < 48 {
+		return strings.Join(values, " ") + "\n" + hint
+	}
+	return strings.Join(values, "  ") + "    " + hint
 }
 func (m Model) statusView() string {
 	left, right := "", ""
@@ -643,8 +688,12 @@ func (m Model) statusView() string {
 		if status == "" {
 			status = "ready"
 		}
-		left = dimStyle.Render(status)
-		right = dimStyle.Render("enter send   ctrl+p commands   ctrl+l sessions")
+		if m.autoApprove {
+			left = warningStyle.Bold(true).Render("AUTO approvals") + "  " + dimStyle.Render(status)
+		} else {
+			left = dimStyle.Render(status)
+		}
+		right = dimStyle.Render("enter send   tab auto   ctrl+p commands")
 	}
 	if lipgloss.Width(left)+lipgloss.Width(right)+2 > m.contentWidth() {
 		return " " + left
@@ -710,7 +759,11 @@ func (m Model) sessionPickerView() string {
 func (m Model) startRun(ctx context.Context, prompt string) tea.Cmd {
 	return func() tea.Msg {
 		go func() {
+			autoApprove := m.autoApprove
 			approve := func(ctx context.Context, prompt icoder.ApprovalPrompt) (icoder.ApprovalDecision, error) {
+				if autoApprove {
+					return icoder.ApprovalApproveAuto, nil
+				}
 				response := make(chan icoder.ApprovalDecision, 1)
 				select {
 				case m.events <- runEvent{approval: &approvalEvent{prompt: prompt, respond: response}}:
@@ -719,6 +772,9 @@ func (m Model) startRun(ctx context.Context, prompt string) tea.Cmd {
 				}
 				select {
 				case decision := <-response:
+					if decision == icoder.ApprovalApproveAuto {
+						autoApprove = true
+					}
 					return decision, nil
 				case <-ctx.Done():
 					return "", ctx.Err()

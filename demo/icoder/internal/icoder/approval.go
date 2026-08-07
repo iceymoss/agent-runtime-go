@@ -10,6 +10,7 @@ type ApprovalDecision string
 
 const (
 	ApprovalApproveOnce ApprovalDecision = "approve_once"
+	ApprovalApproveAuto ApprovalDecision = "approve_auto"
 	ApprovalDeny        ApprovalDecision = "deny"
 )
 

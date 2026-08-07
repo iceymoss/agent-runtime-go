@@ -112,6 +112,8 @@ func (t *authorizedTool) askAndExecute(ctx context.Context, invocation agent.Too
 	kind, reason := permission.ResolutionDeny, "user-rejected"
 	if choice == ApprovalApproveOnce {
 		kind, reason = permission.ResolutionApprove, "user-approved-once"
+	} else if choice == ApprovalApproveAuto {
+		kind, reason = permission.ResolutionApprove, "user-approved-auto"
 	}
 	commandKey := string(check.RequestKey) + ":" + string(kind)
 	_, _, err = t.permission.Resolve(ctx, permission.ResolveCommand{TenantKey: check.Subject.TenantKey, RequestKey: check.RequestKey, CommandKey: commandKey, DecisionKey: permission.DecisionKey(commandKey), ApproverKey: "cli-user", ExpectedRevision: result.Approval.Request.Revision, Kind: kind, ReasonCode: reason})

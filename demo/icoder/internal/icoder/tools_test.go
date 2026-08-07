@@ -76,6 +76,20 @@ func TestAuthorizedToolExecutesAfterApproval(t *testing.T) {
 	}
 }
 
+func TestAuthorizedToolExecutesAfterAutoApproval(t *testing.T) {
+	service, err := NewPermissionService(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := &fixedTool{}
+	tool := &authorizedTool{tool: inner, permission: service, action: "workspace.write", sessionID: func() string { return "session" }, resource: func(string) permission.Resource { return permission.Resource{Kind: "file", Key: "file.go"} }}
+	ctx := withRunContext(context.Background(), "run-auto", "session", func(context.Context, ApprovalPrompt) (ApprovalDecision, error) { return ApprovalApproveAuto, nil }, nil)
+	result, err := tool.Execute(ctx, agent.ToolInvocation{CallID: "call-1", Name: "write_file", RawInput: `{}`})
+	if err != nil || result.Content != "written" || inner.calls != 1 {
+		t.Fatalf("result=%#v calls=%d error=%v", result, inner.calls, err)
+	}
+}
+
 func TestAuthorizedToolDoesNotExecuteAfterRejection(t *testing.T) {
 	service, err := NewPermissionService(false)
 	if err != nil {
