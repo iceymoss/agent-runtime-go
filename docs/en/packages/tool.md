@@ -4,12 +4,14 @@ The `tool` package provides a production-grade execution lifecycle for local too
 
 ## What it is
 
-This is the repository's second tool-system layer. The first layer is the root package's `agent.Tool` / `agent.Registry` / `agent.ToolSet`, which provides model-visible tool definitions, JSON Schema validation, and allowlists and is invoked automatically by the root `Agent` loop. This package reuses the same `agent.Tool` interface for implementations but wraps it in production orchestration: `tool.Registry.Register(agent.Tool, Metadata)` attaches side-effect metadata, `Freeze()` produces an immutable `Generation`, and `Executor` drives the complete lifecycle (prepare -> preflight -> authorize -> execute -> record -> complete). The root `Agent` does not invoke `Executor` automatically; application code bridges the two layers.
+This is the repository's second tool-system layer. The first layer is the root package's `agent.Tool` / `agent.Registry` / `agent.ToolSet`, which provides model-visible tool definitions, JSON Schema validation, and allowlists and is invoked automatically by the root `Agent` loop. This package reuses the same `agent.Tool` interface for implementations but wraps it in production orchestration: `tool.Registry.Register(agent.Tool, Metadata)` attaches side-effect metadata, `Freeze()` produces an immutable `Generation`, and `Executor` drives the complete lifecycle (prepare -> preflight -> authorize -> execute -> record -> complete). `NewAgentRegistry` exposes a frozen generation and Executor to the root Agent.
 
 ```go
 func NewExecutor(options ExecutorOptions) (*Executor, error)
 
 func (e *Executor) Execute(ctx context.Context, request ExecuteRequest) (ExecuteResult, error)
+
+func NewAgentRegistry(generation *Generation, executor *Executor, options AgentBridgeOptions) (*agent.Registry, error)
 
 // 拦截器在 Freeze 时按顺序固定：Before 正序执行，After/OnError 逆序执行
 type Interceptor interface {
@@ -20,6 +22,8 @@ type Interceptor interface {
     OnError(context.Context, PreparedExecution, error) error
 }
 ```
+
+The current bridge requires `ResolveInvocation` to provide stable tenant/run/attempt/fence/resource/policy identity. It is intended for non-durable execution or execution that does not require approval suspension. If the Executor returns an approval blocker, the bridge returns `ErrAgentBridgeSuspensionUnsupported`; it does not disguise the blocker as a normal tool result before the root durable suspension/resume contract exists.
 
 Core data flow: the caller supplies `InvocationIdentity` (tenant, run, attempt, call, raw input, and other identity data). `Executor` canonicalizes the input as `CanonicalInput`, computes its digest, and freezes it as an immutable `PreparedExecution`. Its `ExecutionKey` is derived deterministically from identity + input digest + generation digest. The same logical call therefore has the same `ExecutionKey` across every retry, which is the basis of idempotency.
 

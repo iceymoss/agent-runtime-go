@@ -4,12 +4,14 @@
 
 ## 是什么
 
-这是仓库中工具系统的第二层。第一层是根包的 `agent.Tool` / `agent.Registry` / `agent.ToolSet`：负责模型可见的工具定义、JSON Schema 校验和白名单，由根包 `Agent` 循环自动调用。本包复用同一个 `agent.Tool` 接口作为工具实现，但在其外面包一层生产编排：`tool.Registry.Register(agent.Tool, Metadata)` 附加副作用元数据后 `Freeze()` 出不可变的 `Generation`，再由 `Executor` 驱动完整生命周期（prepare → preflight → authorize → execute → record → complete）。根包 `Agent` 不会自动调用 `Executor`，两层通过应用代码桥接。
+这是仓库中工具系统的第二层。第一层是根包的 `agent.Tool` / `agent.Registry` / `agent.ToolSet`：负责模型可见的工具定义、JSON Schema 校验和白名单，由根包 `Agent` 循环自动调用。本包复用同一个 `agent.Tool` 接口作为工具实现，但在其外面包一层生产编排：`tool.Registry.Register(agent.Tool, Metadata)` 附加副作用元数据后 `Freeze()` 出不可变的 `Generation`，再由 `Executor` 驱动完整生命周期（prepare → preflight → authorize → execute → record → complete）。`NewAgentRegistry` 可以把冻结代次和 Executor 暴露给根 Agent。
 
 ```go
 func NewExecutor(options ExecutorOptions) (*Executor, error)
 
 func (e *Executor) Execute(ctx context.Context, request ExecuteRequest) (ExecuteResult, error)
+
+func NewAgentRegistry(generation *Generation, executor *Executor, options AgentBridgeOptions) (*agent.Registry, error)
 
 // 拦截器在 Freeze 时按顺序固定：Before 正序执行，After/OnError 逆序执行
 type Interceptor interface {
@@ -20,6 +22,8 @@ type Interceptor interface {
     OnError(context.Context, PreparedExecution, error) error
 }
 ```
+
+当前 bridge 要求调用方通过 `ResolveInvocation` 提供稳定的 tenant/run/attempt/fence/resource/policy 身份，适用于 non-durable 或不需要审批 suspension 的执行。若 Executor 返回 approval blocker，bridge 会返回 `ErrAgentBridgeSuspensionUnsupported`；在 root durable suspension/resume contract 完成前，它不会把 blocker 伪装成普通工具结果。
 
 核心数据流：调用方提供 `InvocationIdentity`（租户、run、attempt、call、原始输入等身份信息），`Executor` 将输入规范化为 `CanonicalInput` 并计算摘要，冻结为不可变的 `PreparedExecution`，其中 `ExecutionKey` 由身份 + 输入摘要 + 代次摘要确定性推导——同一次逻辑调用无论重试多少次，`ExecutionKey` 都相同，这是幂等的基础。
 
