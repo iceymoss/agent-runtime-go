@@ -48,14 +48,36 @@ func (t *authorizedTool) Execute(ctx context.Context, invocation agent.ToolInvoc
 	if err != nil {
 		return agent.ToolResult{}, err
 	}
+	if err := recordRunFact(ctx, run, invocation.CallID+":permission-checked", "agent.permission.checked", map[string]any{"tool": invocation.Name, "action": t.action, "resource": check.Resource, "input_digest": inputDigest, "decision": decision.Decision, "reason_code": decision.ReasonCode}); err != nil {
+		return agent.ToolResult{}, err
+	}
 	switch decision.Decision {
 	case permission.DecisionAllow:
-		return t.tool.Execute(ctx, invocation)
+		return t.executeAndRecord(ctx, invocation, run)
 	case permission.DecisionAsk:
+		if err := recordRunFact(ctx, run, invocation.CallID+":approval-requested", "agent.approval.requested", map[string]any{"tool": invocation.Name, "action": t.action, "resource": check.Resource, "input_digest": inputDigest}); err != nil {
+			return agent.ToolResult{}, err
+		}
 		return t.askAndExecute(ctx, invocation, check, decision, run.approve)
 	default:
 		return agent.ToolResult{IsError: true, StopTurn: true, Content: "permission denied: " + decision.ReasonCode}, nil
 	}
+}
+
+func (t *authorizedTool) executeAndRecord(ctx context.Context, invocation agent.ToolInvocation, run runContext) (agent.ToolResult, error) {
+	if err := recordRunFact(ctx, run, invocation.CallID+":started", "agent.tool.started", map[string]any{"tool": invocation.Name}); err != nil {
+		return agent.ToolResult{}, err
+	}
+	result, err := t.tool.Execute(ctx, invocation)
+	eventType := "agent.tool.completed"
+	payload := map[string]any{"tool": invocation.Name, "is_error": result.IsError, "stop_turn": result.StopTurn}
+	if err != nil {
+		eventType, payload["error"] = "agent.tool.failed", err.Error()
+	}
+	if eventErr := recordRunFact(context.WithoutCancel(ctx), run, invocation.CallID+":terminal", eventType, payload); eventErr != nil {
+		return result, errorsJoin(err, eventErr)
+	}
+	return result, err
 }
 
 func (t *authorizedTool) askAndExecute(ctx context.Context, invocation agent.ToolInvocation, check permission.CheckRequest, result permission.CheckResult, approve ApprovalFunc) (agent.ToolResult, error) {
@@ -81,6 +103,10 @@ func (t *authorizedTool) askAndExecute(ctx context.Context, invocation agent.Too
 	if err != nil {
 		return agent.ToolResult{}, err
 	}
+	run := currentRunContext(ctx)
+	if err := recordRunFact(ctx, run, invocation.CallID+":approval-resolved", "agent.approval.resolved", map[string]any{"tool": invocation.Name, "resolution": kind, "reason_code": reason}); err != nil {
+		return agent.ToolResult{}, err
+	}
 	if kind == permission.ResolutionDeny {
 		return agent.ToolResult{IsError: true, StopTurn: true, Content: "permission denied by user"}, nil
 	}
@@ -91,10 +117,20 @@ func (t *authorizedTool) askAndExecute(ctx context.Context, invocation agent.Too
 	if revalidated.Decision != permission.DecisionAllow {
 		return agent.ToolResult{}, fmt.Errorf("permission revalidation did not allow execution")
 	}
+	if err := recordRunFact(ctx, run, invocation.CallID+":permission-revalidated", "agent.permission.revalidated", map[string]any{"tool": invocation.Name, "decision": revalidated.Decision}); err != nil {
+		return agent.ToolResult{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return agent.ToolResult{}, err
 	}
-	return t.tool.Execute(ctx, invocation)
+	return t.executeAndRecord(ctx, invocation, run)
+}
+
+func recordRunFact(ctx context.Context, run runContext, suffix, eventType string, payload any) error {
+	if run.record == nil {
+		return nil
+	}
+	return run.record(ctx, suffix, eventType, payload)
 }
 
 func NewPermissionService(allowWrites bool) (permission.Service, error) {

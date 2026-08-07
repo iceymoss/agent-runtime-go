@@ -140,7 +140,7 @@ func TestAppRunsToolLoopAndCommitsTurn(t *testing.T) {
 		t.Fatalf("stored session = %#v, history = %#v", snapshot, history)
 	}
 	events, err := app.store.ReplayEvents(context.Background(), "integration", 0, 10)
-	if err != nil || len(events) != 2 || events[0].Type != "agent.run.started" || events[1].Type != "agent.run.completed" {
+	if err != nil || len(events) != 5 || events[0].Type != "agent.run.started" || events[1].Type != "agent.permission.checked" || events[2].Type != "agent.tool.started" || events[3].Type != "agent.tool.completed" || events[4].Type != "agent.run.completed" {
 		t.Fatalf("events = %#v, error = %v", events, err)
 	}
 }

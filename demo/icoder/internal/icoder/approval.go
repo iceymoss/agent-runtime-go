@@ -27,10 +27,11 @@ type runContext struct {
 	id      string
 	session string
 	approve ApprovalFunc
+	record  func(context.Context, string, string, any) error
 }
 
-func withRunContext(ctx context.Context, id, session string, approve ApprovalFunc) context.Context {
-	return context.WithValue(ctx, runContextKey{}, runContext{id: id, session: session, approve: approve})
+func withRunContext(ctx context.Context, id, session string, approve ApprovalFunc, record func(context.Context, string, string, any) error) context.Context {
+	return context.WithValue(ctx, runContextKey{}, runContext{id: id, session: session, approve: approve, record: record})
 }
 
 func currentRunContext(ctx context.Context) runContext {

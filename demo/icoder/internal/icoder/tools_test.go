@@ -49,7 +49,7 @@ func TestAuthorizedToolExecutesAfterApproval(t *testing.T) {
 	ctx := withRunContext(context.Background(), "run-1", "session", func(_ context.Context, value ApprovalPrompt) (ApprovalDecision, error) {
 		prompt = value
 		return ApprovalApproveOnce, nil
-	})
+	}, nil)
 	result, err := tool.Execute(ctx, agent.ToolInvocation{CallID: "call-1", Name: "write_file", RawInput: `{"path":"file.go"}`})
 	if err != nil || result.Content != "written" || inner.calls != 1 {
 		t.Fatalf("result = %#v, calls = %d, error = %v", result, inner.calls, err)
@@ -66,7 +66,7 @@ func TestAuthorizedToolDoesNotExecuteAfterRejection(t *testing.T) {
 	}
 	inner := &fixedTool{}
 	tool := &authorizedTool{tool: inner, permission: service, action: "workspace.write", sessionID: func() string { return "session" }, resource: func(string) permission.Resource { return permission.Resource{Kind: "file", Key: "file.go"} }}
-	ctx := withRunContext(context.Background(), "run-2", "session", func(context.Context, ApprovalPrompt) (ApprovalDecision, error) { return ApprovalDeny, nil })
+	ctx := withRunContext(context.Background(), "run-2", "session", func(context.Context, ApprovalPrompt) (ApprovalDecision, error) { return ApprovalDeny, nil }, nil)
 	result, err := tool.Execute(ctx, agent.ToolInvocation{CallID: "call-1", Name: "write_file", RawInput: `{}`})
 	if err != nil || !result.IsError || !result.StopTurn || inner.calls != 0 {
 		t.Fatalf("result = %#v, calls = %d, error = %v", result, inner.calls, err)
@@ -100,7 +100,7 @@ func TestAuthorizedToolUsesFrozenRunSession(t *testing.T) {
 	}
 	inner := &fixedTool{}
 	tool := &authorizedTool{tool: inner, permission: service, action: "workspace.write", sessionID: func() string { return "ui-session" }, resource: func(string) permission.Resource { return permission.Resource{Kind: "file", Key: "file.go"} }}
-	ctx := withRunContext(context.Background(), "run", "run-session", nil)
+	ctx := withRunContext(context.Background(), "run", "run-session", nil, nil)
 	if _, err := tool.Execute(ctx, agent.ToolInvocation{CallID: "call", Name: "write_file", RawInput: `{}`}); err != nil {
 		t.Fatal(err)
 	}
