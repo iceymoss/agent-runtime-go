@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -123,8 +124,12 @@ func TestAppRunsToolLoopAndCommitsTurn(t *testing.T) {
 		t.Fatalf("provider requests = %#v", gotRequests)
 	}
 	second := gotRequests[1]
-	if len(second.Messages) < 2 || second.Messages[len(second.Messages)-1].Role != "tool" || second.Messages[len(second.Messages)-1].Content != "module example.com/icoder-test\n" {
+	if len(second.Messages) < 2 || second.Messages[len(second.Messages)-1].Role != "tool" {
 		t.Fatalf("second provider request = %#v", second)
+	}
+	var readResult FileContent
+	if err := json.Unmarshal([]byte(second.Messages[len(second.Messages)-1].Content), &readResult); err != nil || readResult.Path != "go.mod" || readResult.TotalLines != 2 || !strings.Contains(readResult.Content, "module example.com/icoder-test") {
+		t.Fatalf("read_file result = %#v, error = %v", readResult, err)
 	}
 
 	snapshot, history, err := app.store.Load(context.Background(), "integration")

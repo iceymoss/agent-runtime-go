@@ -113,7 +113,7 @@ icoder version                 显示版本
 | `get_working_directory` | 返回工具 cwd | allow |
 | `list_files` | 递归列文件 | allow |
 | `glob_files` | 按 glob 查找文件，支持 `**` | allow |
-| `read_file` | 范围读取、行号、digest 与截断信息 | allow |
+| `read_file` | 结构化范围读取，返回行号、总行数、digest 与截断信息 | allow |
 | `search_code` | 字面或正则搜索，可按 glob 过滤 | allow |
 | `git_status` | 查看分支和 workspace 状态 | allow |
 | `git_diff` | 查看 unstaged/staged diff | allow |

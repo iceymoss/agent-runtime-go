@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const maxToolOutput = 64 << 10
@@ -36,12 +37,13 @@ type CommandResult struct {
 }
 
 type FileContent struct {
-	Path      string `json:"path"`
-	Content   string `json:"content"`
-	StartLine int    `json:"start_line"`
-	EndLine   int    `json:"end_line"`
-	Truncated bool   `json:"truncated"`
-	Digest    string `json:"digest"`
+	Path       string `json:"path"`
+	Content    string `json:"content"`
+	StartLine  int    `json:"start_line"`
+	EndLine    int    `json:"end_line"`
+	TotalLines int    `json:"total_lines"`
+	Truncated  bool   `json:"truncated"`
+	Digest     string `json:"digest"`
 }
 
 type PatchOperation struct {
@@ -132,8 +134,14 @@ func (w *Workspace) ReadFile(ctx context.Context, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if !utf8.Valid(data) || strings.IndexByte(string(data), 0) >= 0 {
+		return "", fmt.Errorf("file appears to be binary or is not valid UTF-8")
+	}
 	if len(data) > maxToolOutput {
 		data = data[:maxToolOutput]
+		for !utf8.Valid(data) {
+			data = data[:len(data)-1]
+		}
 	}
 	return string(data), nil
 }
@@ -150,8 +158,8 @@ func (w *Workspace) ReadFileLines(ctx context.Context, name string, offset, limi
 	if err != nil {
 		return FileContent{}, err
 	}
-	if strings.IndexByte(string(data), 0) >= 0 {
-		return FileContent{}, fmt.Errorf("file appears to be binary")
+	if !utf8.Valid(data) || strings.IndexByte(string(data), 0) >= 0 {
+		return FileContent{}, fmt.Errorf("file appears to be binary or is not valid UTF-8")
 	}
 	if offset <= 0 {
 		offset = 1
@@ -170,10 +178,13 @@ func (w *Workspace) ReadFileLines(ctx context.Context, name string, offset, limi
 	truncated := end < len(lines)
 	if len(content) > maxToolOutput {
 		content = content[:maxToolOutput]
+		for !utf8.ValidString(content) {
+			content = content[:len(content)-1]
+		}
 		truncated = true
 	}
 	relative, _ := filepath.Rel(w.WorkingDirectory(), path)
-	return FileContent{Path: filepath.ToSlash(relative), Content: content, StartLine: start + 1, EndLine: end, Truncated: truncated, Digest: digest(data)}, nil
+	return FileContent{Path: filepath.ToSlash(relative), Content: content, StartLine: start + 1, EndLine: end, TotalLines: len(lines), Truncated: truncated, Digest: digest(data)}, nil
 }
 
 func (w *Workspace) Glob(ctx context.Context, pattern string, limit int) ([]string, error) {

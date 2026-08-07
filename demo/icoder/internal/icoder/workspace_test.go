@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestWorkspaceConfinementAndOperations(t *testing.T) {
@@ -129,7 +130,7 @@ func TestWorkspaceCodeAgentOperations(t *testing.T) {
 		t.Fatalf("SearchPattern() = %#v, %v", matches, err)
 	}
 	content, err := workspace.ReadFileLines(context.Background(), "pkg/api/handler.go", 3, 2)
-	if err != nil || content.StartLine != 3 || content.EndLine != 4 || !content.Truncated || !strings.Contains(content.Content, "3: func Handle") {
+	if err != nil || content.StartLine != 3 || content.EndLine != 4 || content.TotalLines != 6 || !content.Truncated || !strings.Contains(content.Content, "3: func Handle") {
 		t.Fatalf("ReadFileLines() = %#v, %v", content, err)
 	}
 	updatedDigest, err := workspace.EditFile(context.Background(), "pkg/api/handler.go", `return "old"`, `return "new"`, content.Digest, false)
@@ -138,6 +139,60 @@ func TestWorkspaceCodeAgentOperations(t *testing.T) {
 	}
 	if _, err := workspace.EditFile(context.Background(), "pkg/api/handler.go", `return "new"`, `return "stale"`, content.Digest, false); err == nil {
 		t.Fatal("EditFile() accepted stale digest")
+	}
+}
+
+func TestWorkspaceReadFileLinesReportsCompleteMetadata(t *testing.T) {
+	root := t.TempDir()
+	data := []byte("first\nsecond\nthird")
+	if err := os.WriteFile(filepath.Join(root, "text.txt"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := workspace.ReadFileLines(context.Background(), "text.txt", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content.Path != "text.txt" || content.StartLine != 1 || content.EndLine != 3 || content.TotalLines != 3 || content.Truncated || content.Digest != digest(data) || content.Content != "1: first\n2: second\n3: third" {
+		t.Fatalf("ReadFileLines() = %#v", content)
+	}
+}
+
+func TestWorkspaceReadFileLinesRejectsBinaryAndInvalidUTF8(t *testing.T) {
+	root := t.TempDir()
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{
+		"binary.dat":  {0, 1, 2},
+		"invalid.txt": {0xff, 0xfe},
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := workspace.ReadFileLines(context.Background(), name, 0, 0); err == nil {
+			t.Fatalf("ReadFileLines(%q) accepted non-text content", name)
+		}
+	}
+}
+
+func TestWorkspaceReadFileLinesReportsByteTruncation(t *testing.T) {
+	root := t.TempDir()
+	data := []byte(strings.Repeat("界", maxToolOutput))
+	if err := os.WriteFile(filepath.Join(root, "large.txt"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := workspace.ReadFileLines(context.Background(), "large.txt", 0, 0)
+	if err != nil || !content.Truncated || !utf8.ValidString(content.Content) || len(content.Content) > maxToolOutput {
+		t.Fatalf("ReadFileLines() length = %d, truncated = %t, error = %v", len(content.Content), content.Truncated, err)
 	}
 }
 

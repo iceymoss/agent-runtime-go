@@ -164,13 +164,6 @@ func (t readFileTool) Execute(ctx context.Context, invocation agent.ToolInvocati
 	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
 		return agent.ToolResult{}, err
 	}
-	if input.Offset == 0 && input.Limit == 0 {
-		content, err := t.workspace.ReadFile(ctx, input.Path)
-		if err != nil {
-			return agent.ToolResult{Content: err.Error(), IsError: true}, nil
-		}
-		return agent.ToolResult{Content: content}, nil
-	}
 	content, err := t.workspace.ReadFileLines(ctx, input.Path, input.Offset, input.Limit)
 	if err != nil {
 		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
