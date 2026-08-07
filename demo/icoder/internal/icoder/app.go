@@ -157,7 +157,7 @@ func NewApp(ctx context.Context, config Config) (app *App, resultErr error) {
 	if err != nil {
 		return nil, err
 	}
-	planner, err := agentcontext.NewPlanner(byteCounter{}, agentcontext.NewMemoryStore())
+	planner, err := agentcontext.NewPlanner(byteCounter{}, contextPlanStore{store: store})
 	if err != nil {
 		return nil, err
 	}

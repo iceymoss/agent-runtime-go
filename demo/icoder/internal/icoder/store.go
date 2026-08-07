@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/iceymoss/agent-runtime-go"
+	agentcontext "github.com/iceymoss/agent-runtime-go/context"
 	"github.com/iceymoss/agent-runtime-go/event"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -22,6 +23,7 @@ type SessionSnapshot struct {
 	ID       string
 	Revision uint64
 	Usage    agent.Usage
+	Pivot    *agentcontext.PivotRef
 }
 
 type SessionInfo struct {
@@ -61,6 +63,7 @@ func (s *Store) migrate() error {
 		`CREATE TABLE IF NOT EXISTS icoder_messages (
             session_id TEXT NOT NULL,
             ordinal INTEGER NOT NULL,
+			turn_revision INTEGER NOT NULL DEFAULT 0,
             payload TEXT NOT NULL,
             created_at TEXT NOT NULL,
             PRIMARY KEY (session_id, ordinal),
@@ -84,10 +87,107 @@ func (s *Store) migrate() error {
             PRIMARY KEY (session_id, sequence),
             FOREIGN KEY (session_id) REFERENCES icoder_sessions(id)
         )`,
+		`CREATE TABLE IF NOT EXISTS icoder_context_plans (
+			tenant_key TEXT NOT NULL,
+			plan_key TEXT NOT NULL,
+			plan_digest TEXT NOT NULL,
+			payload BLOB NOT NULL,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (tenant_key, plan_key)
+		)`,
+		`CREATE TABLE IF NOT EXISTS icoder_context_artifacts (
+			tenant_key TEXT NOT NULL,
+			artifact_key TEXT NOT NULL,
+			artifact_digest TEXT NOT NULL,
+			payload BLOB NOT NULL,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (tenant_key, artifact_key)
+		)`,
+		`CREATE TABLE IF NOT EXISTS icoder_session_context (
+			session_id TEXT PRIMARY KEY,
+			pivot_payload BLOB NOT NULL,
+			updated_at TEXT NOT NULL,
+			FOREIGN KEY (session_id) REFERENCES icoder_sessions(id) ON DELETE CASCADE
+		)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.Exec(statement); err != nil {
 			return fmt.Errorf("migrate icoder store: %w", err)
+		}
+	}
+	if err := s.ensureMessageTurnRevision(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ensureMessageTurnRevision() error {
+	rows, err := s.db.Query(`PRAGMA table_info(icoder_messages)`)
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		found = found || name == "turn_revision"
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	if _, err := s.db.Exec(`ALTER TABLE icoder_messages ADD COLUMN turn_revision INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	return s.backfillMessageTurnRevisions()
+}
+
+func (s *Store) backfillMessageTurnRevisions() error {
+	rows, err := s.db.Query(`SELECT session_id, ordinal, payload FROM icoder_messages ORDER BY session_id, ordinal`)
+	if err != nil {
+		return err
+	}
+	type update struct {
+		session           string
+		ordinal, revision uint64
+	}
+	var updates []update
+	var session string
+	var revision uint64
+	for rows.Next() {
+		var current, payload string
+		var ordinal uint64
+		if err := rows.Scan(&current, &ordinal, &payload); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if current != session {
+			session, revision = current, 0
+		}
+		var message agent.Message
+		if err := json.Unmarshal([]byte(payload), &message); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if message.Role == agent.RoleUser {
+			revision++
+		}
+		updates = append(updates, update{current, ordinal, revision})
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, value := range updates {
+		if _, err := s.db.Exec(`UPDATE icoder_messages SET turn_revision = ? WHERE session_id = ? AND ordinal = ?`, value.revision, value.session, value.ordinal); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -100,6 +200,16 @@ func (s *Store) Load(ctx context.Context, sessionID string) (snapshot SessionSna
 	}
 	snapshot.ID = sessionID
 	if err := s.db.QueryRowContext(ctx, `SELECT revision, prompt_tokens, completion_tokens, total_tokens FROM icoder_sessions WHERE id = ?`, sessionID).Scan(&snapshot.Revision, &snapshot.Usage.PromptTokens, &snapshot.Usage.CompletionTokens, &snapshot.Usage.TotalTokens); err != nil {
+		return SessionSnapshot{}, nil, err
+	}
+	var pivotPayload []byte
+	if err := s.db.QueryRowContext(ctx, `SELECT pivot_payload FROM icoder_session_context WHERE session_id = ?`, sessionID).Scan(&pivotPayload); err == nil {
+		var pivot agentcontext.PivotRef
+		if err := json.Unmarshal(pivotPayload, &pivot); err != nil {
+			return SessionSnapshot{}, nil, fmt.Errorf("decode context pivot: %w", err)
+		}
+		snapshot.Pivot = &pivot
+	} else if !errors.Is(err, sql.ErrNoRows) {
 		return SessionSnapshot{}, nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM icoder_messages WHERE session_id = ? ORDER BY ordinal`, sessionID)
@@ -159,7 +269,7 @@ func (s *Store) CommitTurn(ctx context.Context, snapshot SessionSnapshot, reques
 		if marshalErr != nil {
 			return marshalErr
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO icoder_messages(session_id, ordinal, payload, created_at) VALUES(?, ?, ?, ?)`, snapshot.ID, nextOrdinal, payload, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO icoder_messages(session_id, ordinal, turn_revision, payload, created_at) VALUES(?, ?, ?, ?, ?)`, snapshot.ID, nextOrdinal, snapshot.Revision+1, payload, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
 		nextOrdinal++
