@@ -151,6 +151,19 @@ func (m *Model) Stream(ctx context.Context, request *agent.GenerateRequest) (<-c
 	if err != nil {
 		return nil, err
 	}
+	contentType := strings.ToLower(httpResponse.Header.Get("Content-Type"))
+	if strings.HasPrefix(contentType, "application/json") {
+		response, err := decodeChatResponse(httpResponse)
+		if err != nil {
+			return nil, err
+		}
+		return synthesizeChunks(response), nil
+	}
+	if contentType != "" && !strings.HasPrefix(contentType, "text/event-stream") {
+		httpResponse.Body.Close()
+		return nil, agent.NewModelError(agent.ModelErrorKindProtocol, false, httpResponse.StatusCode, 0,
+			fmt.Sprintf("unexpected provider content type %q; expected text/event-stream or application/json (check the provider base URL)", httpResponse.Header.Get("Content-Type")), nil)
+	}
 	chunks := make(chan agent.StreamChunk)
 	go m.consumeSSE(ctx, httpResponse.Body, chunks)
 	return chunks, nil
@@ -174,6 +187,10 @@ func (m *Model) generate(ctx context.Context, request *agent.GenerateRequest) (*
 	if err != nil {
 		return nil, err
 	}
+	return decodeChatResponse(httpResponse)
+}
+
+func decodeChatResponse(httpResponse *http.Response) (*agent.Response, error) {
 	defer httpResponse.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(httpResponse.Body, 32<<20))
 	if err != nil {

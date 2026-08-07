@@ -200,6 +200,65 @@ func TestNonStreamingMode(t *testing.T) {
 	}
 }
 
+func TestStreamingModeAcceptsJSONResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		if !strings.Contains(string(body), `"stream":true`) {
+			t.Errorf("expected streaming request, got %s", body)
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = io.WriteString(w, `{"model":"fake-1","choices":[{"message":{"role":"assistant","content":"Hello."},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`)
+	}))
+	defer server.Close()
+
+	model := openaicompat.New(server.URL, "")
+	runner, err := agent.New(agent.Config{
+		Key:       "test.json-fallback",
+		ModelName: "fake-1",
+		MaxSteps:  4,
+	}, model, agent.NewRegistry())
+	if err != nil {
+		t.Fatalf("new agent: %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), agent.RunRequest{Messages: []agent.Message{
+		agent.NewUserMessage("Say hello."),
+	}})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Text != "Hello." {
+		t.Errorf("unexpected text %q", result.Text)
+	}
+	if result.Usage.TotalTokens != 12 {
+		t.Errorf("unexpected total tokens %d", result.Usage.TotalTokens)
+	}
+}
+
+func TestStreamingModeRejectsUnexpectedContentType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, `<!doctype html><title>Provider home page</title>`)
+	}))
+	defer server.Close()
+
+	model := openaicompat.New(server.URL, "")
+	_, err := model.Stream(context.Background(), &agent.GenerateRequest{
+		Model:    "fake-1",
+		Messages: []agent.Message{agent.NewUserMessage("Say hello.")},
+	})
+	var modelErr *agent.ModelError
+	if !errors.As(err, &modelErr) {
+		t.Fatalf("expected ModelError, got %v", err)
+	}
+	if modelErr.Kind != agent.ModelErrorKindProtocol || !strings.Contains(modelErr.Error(), "check the provider base URL") {
+		t.Fatalf("unexpected error: %v", modelErr)
+	}
+}
+
 func TestStatusClassification(t *testing.T) {
 	cases := []struct {
 		status    int
