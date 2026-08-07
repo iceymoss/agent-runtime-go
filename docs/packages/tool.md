@@ -11,6 +11,8 @@ func NewExecutor(options ExecutorOptions) (*Executor, error)
 
 func (e *Executor) Execute(ctx context.Context, request ExecuteRequest) (ExecuteResult, error)
 
+func (e *Executor) ResumeApproval(ctx context.Context, request ResumeApprovalRequest) (ExecuteResult, error)
+
 func NewAgentRegistry(generation *Generation, executor *Executor, options AgentBridgeOptions) (*agent.Registry, error)
 
 // 拦截器在 Freeze 时按顺序固定：Before 正序执行，After/OnError 逆序执行
@@ -24,6 +26,8 @@ type Interceptor interface {
 ```
 
 当前 bridge 要求调用方通过 `ResolveInvocation` 提供稳定的 tenant/run/attempt/fence/resource/policy 身份。普通 root Agent 可以把 approval blocker 返回为 `OutcomeSuspended`、`StopReasonToolSuspended` 和不含原始输入的 `RunResult.Suspension`；durable approval 的 checkpoint/resume 与 effect-ledger ownership 尚未完成，因此不能把普通 suspension 当作 durable 恢复承诺。
+
+审批通过后，调用方使用原始 `ExecuteRequest` 和 blocker 中的 request ref、resume token、revision 调用 `ResumeApproval`。Executor 会重新计算并验证 immutable prepared identity，调用 permission revalidation，只有精确 effect 仍被允许时才进入 `Begin` 和执行；重复 resume 会复用 ledger 中的成功结果，不会重复副作用。
 
 核心数据流：调用方提供 `InvocationIdentity`（租户、run、attempt、call、原始输入等身份信息），`Executor` 将输入规范化为 `CanonicalInput` 并计算摘要，冻结为不可变的 `PreparedExecution`，其中 `ExecutionKey` 由身份 + 输入摘要 + 代次摘要确定性推导——同一次逻辑调用无论重试多少次，`ExecutionKey` 都相同，这是幂等的基础。
 

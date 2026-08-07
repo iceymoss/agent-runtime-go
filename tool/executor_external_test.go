@@ -137,8 +137,11 @@ func cloneTestRecord(record lifecycle.ExecutionRecord) lifecycle.ExecutionRecord
 }
 
 type testPermission struct {
-	decision permission.CheckDecision
-	checks   atomic.Int32
+	decision      permission.CheckDecision
+	revalidate    permission.CheckDecision
+	revalidateErr error
+	checks        atomic.Int32
+	revalidations atomic.Int32
 }
 
 func (p *testPermission) Check(_ context.Context, request permission.CheckRequest) (permission.CheckResult, error) {
@@ -155,8 +158,12 @@ func (*testPermission) Resolve(context.Context, permission.ResolveCommand) (perm
 func (*testPermission) Cancel(context.Context, permission.CancelCommand) (permission.Snapshot, bool, error) {
 	return permission.Snapshot{}, false, nil
 }
-func (*testPermission) Revalidate(context.Context, permission.RevalidateCommand) (permission.CheckResult, error) {
-	return permission.CheckResult{}, nil
+func (p *testPermission) Revalidate(_ context.Context, command permission.RevalidateCommand) (permission.CheckResult, error) {
+	p.revalidations.Add(1)
+	if p.revalidateErr != nil {
+		return permission.CheckResult{}, p.revalidateErr
+	}
+	return permission.CheckResult{Decision: p.revalidate, InputDigest: command.InputDigest, PolicyVersion: command.PolicyVersion}, nil
 }
 func (*testPermission) GetRequest(context.Context, permission.GetRequestQuery) (permission.Snapshot, error) {
 	return permission.Snapshot{}, nil
@@ -246,6 +253,62 @@ func TestExecutorPermissionAskDoesNotExecute(t *testing.T) {
 	result, err := executor.Execute(context.Background(), validRequest(`{"count":0,"flag":false}`))
 	if !errors.Is(err, lifecycle.ErrApprovalPending) || result.Blocker == nil || implementation.calls.Load() != 0 {
 		t.Fatalf("Execute() result=%#v err=%v calls=%d", result, err, implementation.calls.Load())
+	}
+}
+
+func TestExecutorApprovalResumeExecutesExactlyOnce(t *testing.T) {
+	implementation := &testTool{result: agent.ToolResult{ToolCallID: "call", Name: "write", Content: "ok"}}
+	authorizer := &testPermission{decision: permission.DecisionAsk, revalidate: permission.DecisionAllow}
+	executor, _ := newExecutor(t, implementation, authorizer)
+	request := validRequest(`{"count":0,"flag":false}`)
+	pending, err := executor.Execute(context.Background(), request)
+	if !errors.Is(err, lifecycle.ErrApprovalPending) || pending.Blocker == nil {
+		t.Fatalf("Execute() = %#v, %v", pending, err)
+	}
+	resume := lifecycle.ResumeApprovalRequest{Execute: request, Approval: lifecycle.ApprovalResume{RequestRef: pending.Blocker.RequestRef, ResumeToken: pending.Blocker.ResumeToken, Revision: pending.Blocker.Revision}}
+	completed, err := executor.ResumeApproval(context.Background(), resume)
+	if err != nil || completed.Status != lifecycle.StatusSucceeded || completed.Result == nil || completed.Result.Content != "ok" || implementation.calls.Load() != 1 || authorizer.revalidations.Load() != 1 {
+		t.Fatalf("ResumeApproval() = %#v, %v, calls=%d revalidations=%d", completed, err, implementation.calls.Load(), authorizer.revalidations.Load())
+	}
+	repeated, err := executor.ResumeApproval(context.Background(), resume)
+	if err != nil || repeated.Status != lifecycle.StatusSucceeded || repeated.Result == nil || implementation.calls.Load() != 1 || authorizer.revalidations.Load() != 1 {
+		t.Fatalf("repeated ResumeApproval() = %#v, %v, calls=%d revalidations=%d", repeated, err, implementation.calls.Load(), authorizer.revalidations.Load())
+	}
+}
+
+func TestExecutorApprovalResumeRejectsInvalidApprovalAndDrift(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		revalidateErr error
+		mutate        func(*lifecycle.ResumeApprovalRequest)
+	}{
+		{name: "wrong token", revalidateErr: permission.ErrResumeRevalidation},
+		{name: "denied", revalidateErr: permission.ErrPermissionDenied},
+		{name: "input drift", mutate: func(request *lifecycle.ResumeApprovalRequest) {
+			request.Execute.Invocation.RawInput = `{"count":1,"flag":false}`
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			implementation := &testTool{}
+			authorizer := &testPermission{decision: permission.DecisionAsk, revalidate: permission.DecisionAllow, revalidateErr: test.revalidateErr}
+			executor, _ := newExecutor(t, implementation, authorizer)
+			request := validRequest(`{"count":0,"flag":false}`)
+			pending, err := executor.Execute(context.Background(), request)
+			if !errors.Is(err, lifecycle.ErrApprovalPending) {
+				t.Fatal(err)
+			}
+			resume := lifecycle.ResumeApprovalRequest{Execute: request, Approval: lifecycle.ApprovalResume{RequestRef: pending.Blocker.RequestRef, ResumeToken: pending.Blocker.ResumeToken, Revision: pending.Blocker.Revision}}
+			if test.mutate != nil {
+				test.mutate(&resume)
+			}
+			result, err := executor.ResumeApproval(context.Background(), resume)
+			if err == nil || implementation.calls.Load() != 0 {
+				t.Fatalf("ResumeApproval() result = %#v, error = %v, calls=%d", result, err, implementation.calls.Load())
+			}
+			if test.name == "denied" && (result.Status != lifecycle.StatusFailed || !errors.Is(err, lifecycle.ErrPermissionDenied)) {
+				t.Fatalf("denied result = %#v, error = %v", result, err)
+			}
+		})
 	}
 }
 

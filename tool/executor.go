@@ -78,7 +78,54 @@ func (e *Executor) Execute(ctx context.Context, request ExecuteRequest) (Execute
 	if authorization != nil {
 		return *authorization, lifecycleError(ErrApprovalPending, nil, "authorize", prepared.ExecutionKey, "approval is required")
 	}
-	record, err = e.ledger.Begin(ctx, prepared.ExecutionKey, prepared.FenceToken)
+	return e.executePrepared(ctx, prepared, entry, entered)
+}
+
+// ResumeApproval revalidates one resolved approval against the exact prepared
+// execution before crossing the effect boundary.
+func (e *Executor) ResumeApproval(ctx context.Context, request ResumeApprovalRequest) (ExecuteResult, error) {
+	if e.permission == nil || request.Approval.RequestRef == "" || request.Approval.ResumeToken == "" || request.Approval.Revision == 0 {
+		return ExecuteResult{}, lifecycleError(ErrInvalidConfiguration, nil, "resume approval", "", "permission service and complete approval receipt are required")
+	}
+	if err := validateInvocation(request.Execute.Invocation); err != nil {
+		return ExecuteResult{}, err
+	}
+	prepared, entry, entered, immediate, err := e.prepare(ctx, request.Execute.Invocation)
+	if err != nil {
+		return ExecuteResult{}, err
+	}
+	if immediate != nil {
+		return ExecuteResult{}, lifecycleError(ErrExecutionConflict, nil, "resume approval", prepared.ExecutionKey, "preflight no longer requires execution")
+	}
+	record, err := e.ledger.Load(ctx, prepared.ExecutionKey)
+	if err != nil {
+		return ExecuteResult{Prepared: prepared}, lifecycleError(ErrExecutionConflict, err, "resume approval", prepared.ExecutionKey, "prepared execution is unavailable")
+	}
+	if !samePrepared(record.Prepared, prepared) {
+		return ExecuteResult{Prepared: prepared, Status: record.Status}, lifecycleError(ErrExecutionConflict, nil, "resume approval", prepared.ExecutionKey, "prepared execution changed")
+	}
+	if record.Status != StatusPrepared {
+		return e.existing(record)
+	}
+	result, err := e.permission.Revalidate(ctx, permission.RevalidateCommand{TenantKey: prepared.TenantKey, RequestKey: request.Approval.RequestRef, ResumeToken: request.Approval.ResumeToken, AttemptRef: permission.AttemptRef(prepared.AttemptKey), FenceToken: prepared.FenceToken, InputDigest: permission.InputDigest(prepared.InputDigest), PolicyVersion: request.Execute.PolicyVersion, ToolGeneration: prepared.ToolGeneration})
+	if err != nil {
+		if errors.Is(err, permission.ErrPermissionDenied) || errors.Is(err, permission.ErrRequestExpired) || errors.Is(err, permission.ErrRequestCanceled) {
+			failure := Failure{Code: "approval_denied", Message: "approval did not authorize execution"}
+			if _, rejectErr := e.ledger.Reject(ctx, prepared.ExecutionKey, prepared.FenceToken, failure); rejectErr != nil {
+				return ExecuteResult{Prepared: prepared, Status: StatusPrepared}, errors.Join(lifecycleError(ErrAuthorizationFailed, err, "resume approval", prepared.ExecutionKey, "approval revalidation failed"), lifecycleError(ErrExecutionUnknown, rejectErr, "record denial", prepared.ExecutionKey, "approval denial could not be recorded"))
+			}
+			return ExecuteResult{Prepared: prepared, Status: StatusFailed}, lifecycleError(ErrPermissionDenied, err, "resume approval", prepared.ExecutionKey, "approval did not authorize execution")
+		}
+		return ExecuteResult{Prepared: prepared, Status: StatusPrepared}, lifecycleError(ErrAuthorizationFailed, err, "resume approval", prepared.ExecutionKey, "approval revalidation failed")
+	}
+	if result.Decision != permission.DecisionAllow {
+		return ExecuteResult{Prepared: prepared, Status: StatusPrepared}, lifecycleError(ErrAuthorizationFailed, nil, "resume approval", prepared.ExecutionKey, "approval revalidation did not allow execution")
+	}
+	return e.executePrepared(ctx, prepared, entry, entered)
+}
+
+func (e *Executor) executePrepared(ctx context.Context, prepared PreparedExecution, entry registration, entered []Interceptor) (ExecuteResult, error) {
+	record, err := e.ledger.Begin(ctx, prepared.ExecutionKey, prepared.FenceToken)
 	if err != nil {
 		return ExecuteResult{Prepared: prepared}, lifecycleError(ErrStaleFence, err, "begin", prepared.ExecutionKey, "execution could not cross the effect boundary")
 	}
@@ -109,6 +156,12 @@ func (e *Executor) Execute(ctx context.Context, request ExecuteRequest) (Execute
 	e.observe(PhaseComplete, prepared)
 	completed := cloneResult(result)
 	return ExecuteResult{Prepared: prepared, Status: record.Status, Result: &completed}, nil
+}
+
+func samePrepared(left, right PreparedExecution) bool {
+	leftDigest, leftErr := agent.CanonicalDigest(left)
+	rightDigest, rightErr := agent.CanonicalDigest(right)
+	return leftErr == nil && rightErr == nil && leftDigest == rightDigest
 }
 
 func (e *Executor) prepare(ctx context.Context, invocation InvocationIdentity) (PreparedExecution, registration, []Interceptor, *agent.ToolResult, error) {

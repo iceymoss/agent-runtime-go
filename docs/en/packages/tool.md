@@ -11,6 +11,8 @@ func NewExecutor(options ExecutorOptions) (*Executor, error)
 
 func (e *Executor) Execute(ctx context.Context, request ExecuteRequest) (ExecuteResult, error)
 
+func (e *Executor) ResumeApproval(ctx context.Context, request ResumeApprovalRequest) (ExecuteResult, error)
+
 func NewAgentRegistry(generation *Generation, executor *Executor, options AgentBridgeOptions) (*agent.Registry, error)
 
 // 拦截器在 Freeze 时按顺序固定：Before 正序执行，After/OnError 逆序执行
@@ -24,6 +26,8 @@ type Interceptor interface {
 ```
 
 The bridge requires `ResolveInvocation` to provide stable tenant/run/attempt/fence/resource/policy identity. An ordinary root Agent can project an approval blocker as `OutcomeSuspended`, `StopReasonToolSuspended`, and a `RunResult.Suspension` that contains no raw input. Durable approval checkpoint/resume and effect-ledger ownership are not complete yet, so ordinary suspension must not be treated as a durable recovery guarantee.
+
+After approval, call `ResumeApproval` with the original `ExecuteRequest` and the request ref, resume token, and revision from the blocker. The Executor recomputes and verifies the immutable prepared identity, runs permission revalidation, and crosses `Begin` only if the exact effect is still allowed. Repeated resume calls reuse a succeeded ledger result and do not repeat the side effect.
 
 Core data flow: the caller supplies `InvocationIdentity` (tenant, run, attempt, call, raw input, and other identity data). `Executor` canonicalizes the input as `CanonicalInput`, computes its digest, and freezes it as an immutable `PreparedExecution`. Its `ExecutionKey` is derived deterministically from identity + input digest + generation digest. The same logical call therefore has the same `ExecutionKey` across every retry, which is the basis of idempotency.
 

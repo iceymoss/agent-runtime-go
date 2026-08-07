@@ -189,6 +189,17 @@ type ExecuteRequest struct {
 	ApprovalExpiresAt time.Time
 }
 
+type ApprovalResume struct {
+	RequestRef  permission.RequestKey
+	ResumeToken permission.ResumeToken
+	Revision    uint64
+}
+
+type ResumeApprovalRequest struct {
+	Execute  ExecuteRequest
+	Approval ApprovalResume
+}
+
 type ExecuteResult struct {
 	Prepared PreparedExecution
 	Status   ExecutionStatus
