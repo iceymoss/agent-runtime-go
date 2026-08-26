@@ -1,0 +1,9 @@
+- 两个 module 都要过 CI 门槛，改完代码依次跑：`gofmt -l .`（输出为空）、`go vet ./...`、`go test ./... -count=1`、`go test -race ./... -count=1`，再加 `cd demo/icoder && go vet ./... && go test ./... -count=1`
+- 一律带 `-count=1`，本仓库不接受缓存的测试结果
+- 测试包划分是有意为之：白盒测试放 `xxx_test.go`（`package agent` / `package <name>`），公开 API 契约测试放 `xxx_external_test.go`（`package agent_test` / `package <name>_test`）。子包默认写外部包测试，保证导出面诚实可用
+- 表驱动 + `t.Run` 子测试是统一风格：`tests := []struct{ name string; ... }{...}`，用例名描述"场景 + 预期行为"
+- 已审计的不变量回归统一写进 `audit_regression_test.go`（tool choice 强制、repair budget、observer 深拷贝、终态、取消），不要散落到各处
+- 测试不得依赖网络、真实模型或真实凭据；用确定性 fake model 和 `agenttest` 提供的套件
+- 新 Model 适配器跑 `agenttest.TestModel`，新 Tool 跑 `agenttest.TestTool`。`agenttest` 只能被测试代码引用，生产包引用会被 `deps_test.go` 拦下
+- 临时目录用 `t.TempDir()`；并发用例必须在 `-race` 下稳定通过，不要用 `time.Sleep` 做同步
+- 新增或修改公开行为必须带测试；纯文档改动除外
