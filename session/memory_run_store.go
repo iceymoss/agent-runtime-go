@@ -145,17 +145,7 @@ func (s *MemoryRunStore) ClaimNext(ctx context.Context, workerID string, leaseUn
 		return Claim{}, false, nil
 	}
 	sort.Slice(eligible, func(i, j int) bool {
-		left, right := eligible[i].admission, eligible[j].admission
-		if left.Priority != right.Priority {
-			return left.Priority > right.Priority
-		}
-		if !left.CreatedAt.Equal(right.CreatedAt) {
-			return left.CreatedAt.Before(right.CreatedAt)
-		}
-		if left.BranchKey != right.BranchKey {
-			return left.BranchKey < right.BranchKey
-		}
-		return left.RunKey < right.RunKey
+		return ClaimBefore(eligible[i].admission, eligible[j].admission)
 	})
 	run := eligible[0]
 	s.nextClaim++

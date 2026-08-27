@@ -63,55 +63,6 @@ func validateSnapshotContent(snapshot Snapshot) error {
 	return nil
 }
 
-func (m *Memory) validateBranchCorrelationsLocked(candidate Snapshot, replaced *aggregateKey) error {
-	type call struct {
-		name    string
-		ordinal uint64
-	}
-	calls := make(map[string]call)
-	results := make(map[string]struct{})
-	snapshots := make([]Snapshot, 0, len(m.messages)+1)
-	for key, stored := range m.messages {
-		if replaced != nil && key == *replaced {
-			continue
-		}
-		s := stored.snapshot
-		if s.TenantKey == candidate.TenantKey && s.SessionKey == candidate.SessionKey && s.BranchKey == candidate.BranchKey && s.State != StateTombstoned && s.State != StateTerminal {
-			snapshots = append(snapshots, s)
-		}
-	}
-	if candidate.State != StateTombstoned && candidate.State != StateTerminal {
-		snapshots = append(snapshots, candidate)
-	}
-	for _, snapshot := range snapshots {
-		for _, part := range snapshot.Parts {
-			if part.ToolCall != nil {
-				if _, exists := calls[part.ToolCall.ID]; exists {
-					return fmt.Errorf("%w: duplicate branch tool call ID %q", ErrSnapshotInvariant, part.ToolCall.ID)
-				}
-				calls[part.ToolCall.ID] = call{name: part.ToolCall.Name, ordinal: snapshot.BranchOrdinal}
-			}
-		}
-	}
-	for _, snapshot := range snapshots {
-		for _, part := range snapshot.Parts {
-			if part.ToolResult == nil {
-				continue
-			}
-			result := part.ToolResult
-			matched, exists := calls[result.ToolCallID]
-			if !exists || matched.name != result.Name || matched.ordinal >= snapshot.BranchOrdinal {
-				return fmt.Errorf("%w: tool result %q has no matching call", ErrSnapshotInvariant, result.ToolCallID)
-			}
-			if _, exists := results[result.ToolCallID]; exists {
-				return fmt.Errorf("%w: tool call %q has multiple results", ErrSnapshotInvariant, result.ToolCallID)
-			}
-			results[result.ToolCallID] = struct{}{}
-		}
-	}
-	return nil
-}
-
 func validTransition(from, to State) bool {
 	if from == to {
 		return from == StateBuilding
@@ -130,16 +81,6 @@ func validTransition(from, to State) bool {
 
 func knownState(state State) bool {
 	return state == StateBuilding || state == StateComplete || state == StateCanceled || state == StateFailed || state == StateTombstoned || state == StateTerminal
-}
-
-func validateListContext(ctx context.Context, tenant agent.TenantKey, session string) error {
-	if err := contextError(ctx); err != nil {
-		return err
-	}
-	if !tenant.Valid() || session == "" {
-		return fmt.Errorf("%w: tenant and session are required", ErrInvalidCommand)
-	}
-	return nil
 }
 
 func contextError(ctx context.Context) error {

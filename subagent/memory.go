@@ -31,12 +31,9 @@ type usageRecord struct {
 	digest string
 }
 
-type treeBudget struct {
-	limits   Limits
-	reserved Reservation
-	settled  Usage
-	released Reservation
-}
+// treeBudget holds one delegation tree's shared budget. The accounting lives in
+// BudgetSnapshot's exported methods so an adapter cannot get it subtly wrong.
+type treeBudget struct{ budget BudgetSnapshot }
 
 type memoryRecord struct {
 	snapshot   Snapshot
@@ -70,12 +67,12 @@ func NewMemoryStore() *MemoryStore {
 }
 
 func (s *MemoryStore) Spawn(_ context.Context, request SpawnRequest, now time.Time) (SpawnReceipt, bool, error) {
-	if err := validateSpawn(request, now); err != nil {
+	if err := ValidateSpawn(request, now); err != nil {
 		return SpawnReceipt{}, false, err
 	}
-	specDigest, err := digest(request)
+	specDigest, err := SpecDigest(request)
 	if err != nil {
-		return SpawnReceipt{}, false, fmt.Errorf("%w: digest spawn request: %v", ErrInvalidRequest, err)
+		return SpawnReceipt{}, false, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -96,31 +93,25 @@ func (s *MemoryStore) Spawn(_ context.Context, request SpawnRequest, now time.Ti
 	if err != nil {
 		return SpawnReceipt{}, false, err
 	}
-	childRunKey := RunKey(derivedKey("run", string(request.Parent.TenantKey), request.RequestKey))
-	if err := s.checkCycleLocked(request.Parent.TenantKey, request.Parent.RunKey, childRunKey); err != nil {
+	child := NewChildRef(request.Parent.TenantKey, request.RequestKey, depth)
+	if err := ValidateNoCycle(request.Parent.RunKey, child.RunKey, s.parentLookupLocked(request.Parent.TenantKey)); err != nil {
 		return SpawnReceipt{}, false, err
 	}
-	if depth > tree.limits.MaxDepth {
-		return SpawnReceipt{}, false, ErrDepthExceeded
-	}
-	if s.directFanoutLocked(request.Parent.TenantKey, request.Parent.RunKey) >= int(tree.limits.MaxFanout) {
-		return SpawnReceipt{}, false, ErrFanoutExceeded
-	}
-	if err := reserveBudget(tree, request.Reserve); err != nil {
+	if err := ValidateDepth(depth, tree.budget.Limits); err != nil {
 		return SpawnReceipt{}, false, err
 	}
+	if err := ValidateFanout(s.directFanoutLocked(request.Parent.TenantKey, request.Parent.RunKey), tree.budget.Limits); err != nil {
+		return SpawnReceipt{}, false, err
+	}
+	reserved, err := tree.budget.Reserve(request.Reserve)
+	if err != nil {
+		return SpawnReceipt{}, false, err
+	}
+	tree.budget = reserved
 	if newTree {
 		s.trees[treeID{tenant: request.Parent.TenantKey, key: treeKey}] = tree
 	}
-
-	relationshipKey := RelationshipKey(derivedKey("relationship", string(request.Parent.TenantKey), request.RequestKey))
-	child := ChildRef{
-		TenantKey:       request.Parent.TenantKey,
-		RelationshipKey: relationshipKey,
-		SessionKey:      SessionKey(derivedKey("session", string(request.Parent.TenantKey), request.RequestKey)),
-		RunKey:          childRunKey,
-		Depth:           depth,
-	}
+	relationshipKey := child.RelationshipKey
 	receipt := SpawnReceipt{
 		RequestKey:     request.RequestKey,
 		Child:          child,
@@ -128,7 +119,7 @@ func (s *MemoryStore) Spawn(_ context.Context, request SpawnRequest, now time.Ti
 		SpecDigest:     specDigest,
 		ParentBlocked:  true,
 		Reservation:    request.Reserve,
-		EffectiveLimit: effectiveLimits(tree.limits, request.Reserve, request.Deadline, now),
+		EffectiveLimit: EffectiveLimits(tree.budget.Limits, request.Reserve, request.Deadline, now),
 		CreatedAt:      now,
 	}
 	parent := request.Parent
@@ -153,7 +144,7 @@ func (s *MemoryStore) Spawn(_ context.Context, request SpawnRequest, now time.Ti
 	if s.runs[request.Parent.TenantKey] == nil {
 		s.runs[request.Parent.TenantKey] = make(map[RunKey]relationshipID)
 	}
-	s.runs[request.Parent.TenantKey][childRunKey] = id
+	s.runs[request.Parent.TenantKey][child.RunKey] = id
 	s.appendFactLocked(record, FactChildAccepted, now)
 	return receipt, true, nil
 }
@@ -429,9 +420,9 @@ func (s *MemoryStore) resolveParentLocked(request SpawnRequest) (uint16, TreeKey
 		id := treeID{tenant: request.Parent.TenantKey, key: treeKey}
 		tree := s.trees[id]
 		if tree == nil {
-			tree = &treeBudget{limits: request.Limits}
+			tree = &treeBudget{budget: BudgetSnapshot{Limits: request.Limits}}
 			return 1, treeKey, tree, true, nil
-		} else if tree.limits != request.Limits {
+		} else if tree.budget.Limits != request.Limits {
 			return 0, "", nil, false, ErrIdempotencyConflict
 		}
 		return 1, treeKey, tree, false, nil
@@ -451,28 +442,21 @@ func (s *MemoryStore) resolveParentLocked(request SpawnRequest) (uint16, TreeKey
 	return parent.snapshot.Receipt.Child.Depth + 1, treeKey, tree, false, nil
 }
 
-func (s *MemoryStore) checkCycleLocked(tenantKey agent.TenantKey, parentRun, childRun RunKey) error {
-	if parentRun == childRun {
-		return ErrCycle
-	}
-	seen := map[RunKey]struct{}{childRun: {}}
-	current := parentRun
-	for current != "" {
-		if _, ok := seen[current]; ok {
-			return ErrCycle
-		}
-		seen[current] = struct{}{}
-		id, ok := s.runs[tenantKey][current]
+// parentLookupLocked exposes the delegation graph to the shared cycle check.
+// Only storage can walk it, so storage supplies the walk and the library owns
+// what counts as a cycle.
+func (s *MemoryStore) parentLookupLocked(tenantKey agent.TenantKey) ParentLookup {
+	return func(run RunKey) (RunKey, bool) {
+		id, ok := s.runs[tenantKey][run]
 		if !ok {
-			break
+			return "", false
 		}
 		record := s.records[id]
 		if record == nil {
-			return ErrStoreInvariant
+			return "", false
 		}
-		current = record.snapshot.Parent.RunKey
+		return record.snapshot.Parent.RunKey, true
 	}
-	return nil
 }
 
 func (s *MemoryStore) directFanoutLocked(tenantKey agent.TenantKey, parentRun RunKey) int {
@@ -503,16 +487,15 @@ func (s *MemoryStore) settleLocked(record *memoryRecord, key UsageFactKey, usage
 		return ErrUsageConflict
 	}
 	reservation := record.snapshot.Receipt.Reservation
-	if exceedsReservation(usage, reservation) {
-		return ErrUsageExceedsReserve
-	}
 	tree := s.trees[treeID{tenant: record.snapshot.Receipt.Child.TenantKey, key: record.snapshot.Parent.TreeKey}]
 	if tree == nil {
 		return ErrStoreInvariant
 	}
-	tree.reserved = subtractReservation(tree.reserved, reservation)
-	tree.settled = addUsage(tree.settled, usage)
-	tree.released = addReservation(tree.released, unusedReservation(reservation, usage))
+	settled, err := tree.budget.Settle(reservation, usage)
+	if err != nil {
+		return err
+	}
+	tree.budget = settled
 	record.settled = true
 	record.usageFacts[key] = usageRecord{usage: usage, digest: usageDigest}
 	record.snapshot.UsageFactKey = key
@@ -585,7 +568,7 @@ func (s *MemoryStore) budgetSnapshotLocked(record *memoryRecord) BudgetSnapshot 
 	if tree == nil {
 		return BudgetSnapshot{}
 	}
-	return BudgetSnapshot{Limits: tree.limits, Reserved: tree.reserved, Settled: tree.settled, Released: tree.released}
+	return tree.budget
 }
 
 func validateSpawn(request SpawnRequest, now time.Time) error {
@@ -604,23 +587,6 @@ func validateSpawn(request SpawnRequest, now time.Time) error {
 	if (!request.Deadline.IsZero() && !request.Deadline.After(now)) || (!request.Limits.Deadline.IsZero() && !request.Limits.Deadline.After(now)) {
 		return ErrDeadlineExceeded
 	}
-	return nil
-}
-
-func reserveBudget(tree *treeBudget, reserve Reservation) error {
-	if tree.reserved.InputTokens+tree.settled.InputTokens+reserve.InputTokens > tree.limits.MaxInputTokens || tree.reserved.OutputTokens+tree.settled.OutputTokens+reserve.OutputTokens > tree.limits.MaxOutputTokens {
-		return ErrTokenBudgetExceeded
-	}
-	if tree.reserved.CostMicros+tree.settled.CostMicros+reserve.CostMicros > tree.limits.MaxCostMicros {
-		return ErrCostBudgetExceeded
-	}
-	if tree.reserved.ToolCalls+tree.settled.ToolCalls+reserve.ToolCalls > tree.limits.MaxToolCalls {
-		return ErrToolBudgetExceeded
-	}
-	if tree.reserved.Runtime+tree.settled.Runtime+reserve.Runtime > tree.limits.MaxRuntime {
-		return ErrRuntimeBudgetExceeded
-	}
-	tree.reserved = addReservation(tree.reserved, reserve)
 	return nil
 }
 

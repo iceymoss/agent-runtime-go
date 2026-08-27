@@ -7,11 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/iceymoss/agent-runtime-go"
+	"github.com/iceymoss/agent-runtime-go/agenttest"
 	"github.com/iceymoss/agent-runtime-go/subagent"
 )
 
@@ -43,94 +43,10 @@ func (w *recordingWaker) Wake(_ context.Context, request subagent.WakeRequest) e
 	return nil
 }
 
+// TestMemoryStoreConformance holds this package's reference implementation to
+// the shared suite, so the suite and the reference cannot drift apart.
 func TestMemoryStoreConformance(t *testing.T) {
-	runStoreConformance(t, func() subagent.Store { return subagent.NewMemoryStore() })
-}
-
-func runStoreConformance(t *testing.T, newStore func() subagent.Store) {
-	t.Helper()
-	t.Run("idempotency isolation and deep copies", func(t *testing.T) {
-		store := newStore()
-		now := time.Unix(1_700_000_000, 0).UTC()
-		request := rootSpawn("same", "root", defaultLimits(), subagent.Reservation{InputTokens: 10})
-		first, created, err := store.Spawn(context.Background(), request, now)
-		if err != nil || !created {
-			t.Fatalf("spawn first: created=%v err=%v", created, err)
-		}
-		second, created, err := store.Spawn(context.Background(), request, now)
-		if err != nil || created || first != second {
-			t.Fatalf("spawn retry: created=%v err=%v first=%+v second=%+v", created, err, first, second)
-		}
-		request.Input[0] = 'X'
-		if _, _, err = store.Spawn(context.Background(), request, now); !errors.Is(err, subagent.ErrIdempotencyConflict) {
-			t.Fatalf("immutable mismatch: %v", err)
-		}
-		snapshot, err := store.Get(context.Background(), tenantA, first.Child.RelationshipKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		snapshot.Input[0] = 'Y'
-		again, err := store.Get(context.Background(), tenantA, first.Child.RelationshipKey)
-		if err != nil || string(again.Input) != "task" {
-			t.Fatalf("deep copy: input=%q err=%v", again.Input, err)
-		}
-		if _, err = store.Get(context.Background(), tenantB, first.Child.RelationshipKey); !errors.Is(err, subagent.ErrNotFound) {
-			t.Fatalf("cross-tenant get: %v", err)
-		}
-	})
-
-	t.Run("parallel budget reservation", func(t *testing.T) {
-		store := newStore()
-		limits := defaultLimits()
-		limits.MaxFanout = 20
-		limits.MaxCostMicros = 100
-		var accepted atomic.Int64
-		var unexpected atomic.Value
-		var wait sync.WaitGroup
-		for i := 0; i < 10; i++ {
-			wait.Add(1)
-			go func(index int) {
-				defer wait.Done()
-				request := rootSpawn(subagent.RequestKey(fmt.Sprintf("sibling-%d", index)), "root", limits, subagent.Reservation{CostMicros: 30})
-				_, _, err := store.Spawn(context.Background(), request, time.Unix(1_700_000_000, 0).UTC())
-				if err == nil {
-					accepted.Add(1)
-					return
-				}
-				if !errors.Is(err, subagent.ErrCostBudgetExceeded) {
-					unexpected.Store(err)
-				}
-			}(i)
-		}
-		wait.Wait()
-		if value := unexpected.Load(); value != nil {
-			t.Fatalf("unexpected reservation error: %v", value)
-		}
-		if accepted.Load() != 3 {
-			t.Fatalf("accepted %d reservations, want 3", accepted.Load())
-		}
-	})
-
-	t.Run("usage settles once", func(t *testing.T) {
-		store := newStore()
-		receipt, _, err := store.Spawn(context.Background(), rootSpawn("usage", "root", defaultLimits(), subagent.Reservation{InputTokens: 10, CostMicros: 20}), time.Now())
-		if err != nil {
-			t.Fatal(err)
-		}
-		command := subagent.SettleCommand{TenantKey: tenantA, RelationshipKey: receipt.Child.RelationshipKey, UsageFactKey: "usage-1", Usage: subagent.Usage{InputTokens: 4, CostMicros: 7}, OccurredAt: time.Now()}
-		budget, applied, err := store.SettleUsage(context.Background(), command)
-		if err != nil || !applied || budget.Settled.CostMicros != 7 || budget.Released.CostMicros != 13 {
-			t.Fatalf("first settlement: applied=%v budget=%+v err=%v", applied, budget, err)
-		}
-		budget, applied, err = store.SettleUsage(context.Background(), command)
-		if err != nil || applied || budget.Settled.CostMicros != 7 {
-			t.Fatalf("duplicate settlement: applied=%v budget=%+v err=%v", applied, budget, err)
-		}
-		command.Usage.CostMicros = 8
-		if _, _, err = store.SettleUsage(context.Background(), command); !errors.Is(err, subagent.ErrUsageConflict) {
-			t.Fatalf("usage mismatch: %v", err)
-		}
-	})
+	agenttest.TestSubagentStore(t, func(*testing.T) subagent.Store { return subagent.NewMemoryStore() })
 }
 
 func TestServiceDynamicTwoLevelAndParallelSiblings(t *testing.T) {
