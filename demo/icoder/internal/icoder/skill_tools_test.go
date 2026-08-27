@@ -29,34 +29,16 @@ func TestSkillToolsLoadInstructionsOnDemand(t *testing.T) {
 	if len(messages) != 1 || strings.Contains(messages[0].Text(), "Read callers") || !strings.Contains(messages[0].Text(), "Review changes") {
 		t.Fatalf("skill metadata messages = %#v", messages)
 	}
-	service, err := NewPermissionService(false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	registry := agent.NewRegistry()
-	if err := registerSkillTools(registry, catalog, snapshot, service, func() string { return "session" }); err != nil {
-		t.Fatal(err)
-	}
-	tool, ok := registry.Get("load_skill")
-	if !ok {
-		t.Fatal("load_skill was not registered")
-	}
-	result, err := tool.Execute(context.Background(), agent.ToolInvocation{CallID: "load", Name: "load_skill", RawInput: `{"key":"review"}`})
+	tools := newTestCatalog(t, newTestGate(t, false), skillToolEntries(catalog, snapshot))
+	ctx := testRunContext(context.Background(), "run-skill", "session", nil)
+	result, err := executeCatalogTool(t, ctx, tools, agent.ToolInvocation{CallID: "load", Name: "load_skill", RawInput: `{"key":"review"}`})
 	if err != nil || result.IsError || !strings.Contains(result.Content, "Read callers") || !strings.Contains(result.Content, "untrusted-skill") {
 		t.Fatalf("load_skill result = %#v, %v", result, err)
 	}
 }
 
 func TestSkillToolsAreAbsentWithoutCatalog(t *testing.T) {
-	registry := agent.NewRegistry()
-	service, err := NewPermissionService(false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := registerSkillTools(registry, nil, skills.Snapshot{}, service, func() string { return "session" }); err != nil {
-		t.Fatal(err)
-	}
-	if len(registry.Names()) != 0 {
-		t.Fatalf("registered tools = %v", registry.Names())
+	if entries := skillToolEntries(nil, skills.Snapshot{}); len(entries) != 0 {
+		t.Fatalf("skill entries without a catalog = %d, want 0", len(entries))
 	}
 }

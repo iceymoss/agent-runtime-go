@@ -1135,7 +1135,16 @@ func (w *Workspace) resolveExisting(name string) (string, error) {
 	if filepath.IsAbs(name) {
 		return "", fmt.Errorf("absolute paths are not allowed")
 	}
-	path, err := filepath.EvalSymlinks(filepath.Join(w.WorkingDirectory(), filepath.Clean(name)))
+	joined := filepath.Join(w.WorkingDirectory(), filepath.Clean(name))
+	// The lexical check comes first so an out-of-workspace path is refused before
+	// the filesystem is touched. Otherwise the error would reveal whether a file
+	// outside the workspace exists.
+	if !within(w.root, joined) {
+		return "", fmt.Errorf("path escapes workspace")
+	}
+	// Symlinks are then resolved and the containment re-checked, because a link
+	// inside the workspace can still point outside it.
+	path, err := filepath.EvalSymlinks(joined)
 	if err != nil {
 		return "", err
 	}

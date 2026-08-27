@@ -21,8 +21,16 @@ type SQLiteEventStore struct {
 	now func() time.Time
 }
 
-func NewSQLiteEventStore(db *sql.DB) *SQLiteEventStore {
-	return &SQLiteEventStore{db: db, now: time.Now}
+// NewSQLiteEventStore binds the outbox to an already-migrated database.
+//
+// clock may be nil, which uses wall-clock time. Supplying one lets a test drive
+// lease expiry and retry backoff deterministically instead of sleeping.
+func NewSQLiteEventStore(db *sql.DB, clock ...func() time.Time) *SQLiteEventStore {
+	now := time.Now
+	if len(clock) > 0 && clock[0] != nil {
+		now = clock[0]
+	}
+	return &SQLiteEventStore{db: db, now: now}
 }
 
 var _ event.Store = (*SQLiteEventStore)(nil)

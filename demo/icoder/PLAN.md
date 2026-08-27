@@ -38,7 +38,6 @@
 - Context 使用粗略 token 估算，未完成持久化 compaction。
 - Skills 全量静态注入，没有按需选择。
 - MCP 工具未进入统一 permission/effect 生命周期。
-- `delegate_review` 是 synthetic runner，不执行真实 child agent。
 - 失败、取消、审批和工具事实没有形成可靠事件流。
 
 ## 3. 设计原则
@@ -148,11 +147,15 @@
 - [x] 使用 SQLite event/outbox 和 runtime Dispatcher，而不是依赖 lossy Observation。
 - [x] 增加 retryable model error 的 backoff、jitter 和 Retry-After。
 - [x] 冻结 run-scoped tenant/session/revision/runtime generation。
-- 接入高级 tool executor 和 effect ledger，表达 unknown effect。
+- [x] 接入高级 tool executor 和 effect ledger，表达 unknown effect。
+- [x] 补齐根库 `durable.CheckpointAdapter`（`durable.Store` → `agent.CheckpointStore`）与 `durable.EffectReplayer`。
+- [x] SQLite 实现 `durable.Store` / `ExecutionLedger` / `UsageLedger` / `tool.ExecutionLedger` / `permission.Store`。
+- [x] 每次任务走 durable run；run 终态与会话 turn 在同一事务提交。
+- [x] 审批 blocker 触发 durable suspension，`icoder runs approve/deny/abandon/effects` 完成人工裁决与恢复。
 
-依赖说明：高级 tool executor 的 approval blocker 必须与 M5 的 SessionAgent suspend/resume 一起接入。M3 保留同步 TUI permission wrapper 和可靠事件，不以普通 tool error 模拟 durable suspension。
+依赖说明：交互式 TUI 仍在 preflight 拦截器里同步询问，拒绝对模型可见（`ToolResult{IsError, StopTurn}`）；非交互 `run` 走 durable suspension，由另一个进程批准后精确恢复。两条路径共用同一个 `permission.Service` 与同一份 grant 记录。
 
-当前状态：进程内可靠事件和失败终态已完成；事务 outbox、effect unknown 和 durable resume 留待 M5 组合。
+当前状态：M3 完成。
 
 验收：
 
@@ -170,8 +173,10 @@
 - [x] MCP tool 映射 action、resource、effect class 和 replay policy。
 - [x] MCP 调用进入统一 permission、generation 和 result 限制。
 - [x] 用真实只读 reviewer child agent 替换 synthetic runner。
-- 增加 explorer child agent。
-- 第一版同步返回 child 结果，随后接入 spawn、suspend、wake 和 resume。
+- [x] 增加 explorer child agent。
+- [x] 第一版同步返回 child 结果；spawn / claim / wake / reconcile / 预算与取消已走真实 `subagent.Service`。
+- [x] `SQLiteSubagentStore` 实现 `subagent.Store`：relationship、树预算与 wake intent 跨进程存活，安全限额调用包导出的状态机，通过 `agenttest.TestSubagentStore`。
+- [x] parent-suspending 的异步 wake：根库已补通用 tool suspension（`agent.ToolSuspensionExternal` + `tool.Executor.Resume`），delegate 工具改为返回 `ToolSuspensionExternal` 让父运行落 checkpoint 挂起，child 由 worker 推进后凭 handle 恢复。早到的 wake 会再次挂起而不是失败，重入次数由 `maxDelegationResumes` 兜底。
 
 验收：
 
@@ -180,16 +185,17 @@
 - parent 只接收结构化结果，不复制 child 全量历史。
 - cancellation、depth、fanout 和预算限制生效。
 
-当前状态：同步 reviewer 已完成；explorer 和异步 spawn/suspend/wake/resume 在出现并行探索需求或进入 M5 时实现。
+当前状态：M4 已完成。reviewer 与 explorer 均为真实 child agent，父运行在 child 执行期间真正挂起并从 checkpoint 恢复，结果与 `agent.subagent.awaited` / `agent.subagent.completed` 事件持久化，`icoder delegations` 可回看。
 
 ## 5.1 下一阶段顺序
 
-1. 回补 M0 deterministic coding eval harness，建立功能成功率和安全回归基线。
+1. [x] 回补 M0 deterministic coding eval harness，建立功能成功率和安全回归基线。
 2. 根据 eval 结果完成 provider tokenizer、动态 tool schema budget 和 context diagnostics。
-3. 将进程内事件升级为事务 outbox，补齐 model step 和恢复投影。
-4. 设计并实现 root Agent 到高级 `tool.Executor` 的标准 bridge。
-5. 迁移到 RuntimeDefinition 和 context-aware SessionAgent AttemptRunner。
-6. 接入 durable suspension/resume、effect ledger 和异步 Sub-Agent wake。
+3. [x] 将进程内事件升级为事务 outbox，补齐 model step 和恢复投影。
+4. [x] 设计并实现 root Agent 到高级 `tool.Executor` 的标准 bridge（`tool.NewAgentRegistry` + iCoder `ToolCatalog`）。
+5. [x] 迁移到 RuntimeDefinition（coordinator resolve + manifest）；context-aware SessionAgent AttemptRunner 待办。
+6. [x] 接入 durable suspension/resume 与 effect ledger；异步 Sub-Agent wake 已随通用 tool suspension 落地。
+7. [x] `SQLiteSessionService` + `SQLiteSessionRunStore` + `session.SessionAgent` 接入（`icoder queue`，daemon 启动 worker 并在关闭时排空）。
 
 ### M5：完整参考应用
 
@@ -197,18 +203,21 @@
 
 任务：
 
-- 使用 RuntimeDefinition 冻结 model、prompt、tools、policy、Skills 和 MCP generation。
+- [x] 使用 RuntimeDefinition 冻结 model、prompt、tools、policy、Skills 和 MCP generation，并通过 `coordinator` 持久化 wire manifest、支持精确重建。
 - 通过 SessionAgent 和 context-aware AttemptRunner 运行任务。
-- 提供 SQLite session/message/context/permission/event/subagent/durable adapters。
-- 明确跨 aggregate 事务和 outbox 边界。
-- 增加 daemon 生命周期、readiness 和 bounded shutdown 示例。
+- [x] SQLite adapters：`durable.Store`/`ExecutionLedger`/`UsageLedger`、`tool.ExecutionLedger`、`permission.Store`、`coordinator.ManifestStore`、`event` outbox、context plan/artifact。
+- 仍缺 SQLite adapters：`message.Service`、`session.Service` + `session.Store`。两者的状态机校验（transition、branch correlation、ordinal、limits）都在库内非导出逻辑里，应用侧复刻有漂移风险；建议先在库里导出可复用的校验入口，再写适配器。
+- [x] 明确跨 aggregate 事务和 outbox 边界：turn、messages、usage、terminal event 与 durable 终态在同一个 SQLite 事务提交。
+- [x] 增加 daemon 生命周期、readiness 和 bounded shutdown 示例（`icoder daemon`）。
 
 验收：
 
-- 精确 runtime generation 可以被重建和审计。
-- turn、revision、messages、usage 和 event/outbox 原子提交。
-- 中断运行可以安全 reconcile 或明确进入人工处理状态。
+- [x] 精确 runtime generation 可以被重建和审计（`icoder runtime show/list/verify`）。
+- [x] turn、revision、messages、usage 和 event/outbox 原子提交。
+- [x] 中断运行可以安全 reconcile 或明确进入人工处理状态（`icoder runs list/effects/approve/deny/abandon`）。
 - 文档能指导另一个项目复用同一组合方式。
+
+当前状态：RuntimeDefinition + coordinator + daemon 生命周期完成；SessionAgent 与 `message` 聚合待办。
 
 ## 6. 首轮实施范围
 

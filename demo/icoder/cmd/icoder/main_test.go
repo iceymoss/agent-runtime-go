@@ -14,7 +14,12 @@ import (
 )
 
 func TestSlashCommandsChangeHostState(t *testing.T) {
-	workspace := t.TempDir()
+	// The workspace resolves symlinks, so the expected paths must be resolved the
+	// same way or this fails on platforms with a symlinked temp directory.
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(workspace, "pkg", "agent"), 0o755); err != nil {
 		t.Fatal(err)
 	}
