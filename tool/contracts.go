@@ -130,12 +130,33 @@ type Interceptor interface {
 type ExecutionStatus string
 
 const (
-	StatusPrepared  ExecutionStatus = "prepared"
-	StatusRunning   ExecutionStatus = "running"
+	StatusPrepared ExecutionStatus = "prepared"
+	StatusRunning  ExecutionStatus = "running"
+	// StatusSuspended means the tool started work it cannot finish now and
+	// handed back a durable handle. It is distinct from unknown: the outcome is
+	// not ambiguous, it simply has not happened yet.
+	StatusSuspended ExecutionStatus = "suspended"
 	StatusSucceeded ExecutionStatus = "succeeded"
 	StatusFailed    ExecutionStatus = "failed"
 	StatusUnknown   ExecutionStatus = "unknown"
 )
+
+// Suspension is the durable handle a parked execution is resumed from. It
+// mirrors agent.ToolSuspension without the runtime's step coordinates, which the
+// executor fills in.
+type Suspension struct {
+	Kind        agent.ToolSuspensionKind
+	RequestRef  string
+	ResumeToken string
+	Revision    uint64
+}
+
+// SuspendExecution parks a running execution under the caller's fence.
+type SuspendExecution struct {
+	ExecutionKey string
+	FenceToken   uint64
+	Suspension   Suspension
+}
 
 type Failure struct {
 	Code      string
@@ -150,6 +171,9 @@ type ExecutionRecord struct {
 	Revision   uint64
 	Result     *agent.ToolResult
 	Failure    *Failure
+	// Suspension is set while the execution is parked, so a later attempt can
+	// resume the exact call rather than deriving a new one.
+	Suspension *Suspension
 }
 
 type CompleteExecution struct {
@@ -161,10 +185,17 @@ type CompleteExecution struct {
 
 // ExecutionLedger is a lifecycle consumer port, not a second persistence
 // owner. Implementations adapt these commands to the durable owner's records.
+//
+// Suspend and Resume exist because a tool that is waiting is not a tool that
+// failed. Recording a parked execution as failed would lose the handle a later
+// attempt needs; recording it as unknown would forbid the replay that is in fact
+// safe and expected.
 type ExecutionLedger interface {
 	Prepare(context.Context, PreparedExecution) (ExecutionRecord, bool, error)
 	Reject(context.Context, string, uint64, Failure) (ExecutionRecord, error)
 	Begin(context.Context, string, uint64) (ExecutionRecord, error)
+	Suspend(context.Context, SuspendExecution) (ExecutionRecord, error)
+	Resume(context.Context, string, uint64) (ExecutionRecord, error)
 	Complete(context.Context, CompleteExecution) (ExecutionRecord, error)
 	MarkUnknown(context.Context, string, uint64, Failure) (ExecutionRecord, error)
 	Load(context.Context, string) (ExecutionRecord, error)
@@ -205,7 +236,21 @@ type ExecuteResult struct {
 	Prepared PreparedExecution
 	Status   ExecutionStatus
 	Result   *agent.ToolResult
-	Blocker  *permission.SuspensionBlocker
+	// Blocker is the approval-specific view of a suspension, kept for callers
+	// that only handle approvals.
+	Blocker *permission.SuspensionBlocker
+	// Suspension is set for every parked execution, whatever the reason. Prefer
+	// it over Blocker: it is what a general resume path needs.
+	Suspension *Suspension
+}
+
+// ResumeRequest continues one parked execution. The suspension must be the
+// handle the executor previously returned, which is how a resume is bound to the
+// exact call it belongs to rather than to a similar one.
+type ResumeRequest struct {
+	Execute      ExecuteRequest
+	ExecutionKey string
+	Suspension   Suspension
 }
 
 type ErrorDisposition string

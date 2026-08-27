@@ -364,6 +364,12 @@ func (nilResultLedger) Reject(context.Context, string, uint64, lifecycle.Failure
 func (nilResultLedger) Begin(context.Context, string, uint64) (lifecycle.ExecutionRecord, error) {
 	panic("unexpected Begin")
 }
+func (nilResultLedger) Suspend(context.Context, lifecycle.SuspendExecution) (lifecycle.ExecutionRecord, error) {
+	panic("unexpected Suspend")
+}
+func (nilResultLedger) Resume(context.Context, string, uint64) (lifecycle.ExecutionRecord, error) {
+	panic("unexpected Resume")
+}
 func (nilResultLedger) Complete(context.Context, lifecycle.CompleteExecution) (lifecycle.ExecutionRecord, error) {
 	panic("unexpected Complete")
 }

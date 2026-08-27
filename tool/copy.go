@@ -34,5 +34,9 @@ func cloneRecord(value ExecutionRecord) ExecutionRecord {
 		failure := *value.Failure
 		cloned.Failure = &failure
 	}
+	if value.Suspension != nil {
+		suspension := *value.Suspension
+		cloned.Suspension = &suspension
+	}
 	return cloned
 }

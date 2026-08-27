@@ -19,6 +19,7 @@ var (
 	ErrExecutionInProgress  = errors.New("agent/tool: execution in progress")
 	ErrStaleFence           = errors.New("agent/tool: stale execution fence")
 	ErrExecutionUnknown     = errors.New("agent/tool: execution outcome unknown")
+	ErrExecutionSuspended   = errors.New("agent/tool: execution suspended")
 	ErrResultInvariant      = errors.New("agent/tool: result invariant violated")
 	ErrToolFatal            = errors.New("agent/tool: tool execution failed")
 )

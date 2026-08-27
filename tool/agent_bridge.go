@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/iceymoss/agent-runtime-go"
-	"github.com/iceymoss/agent-runtime-go/permission"
 )
 
 type AgentInvocationResolver func(context.Context, agent.ToolInvocation) (ExecuteRequest, error)
@@ -70,15 +69,30 @@ func (t *agentExecutorTool) Execute(ctx context.Context, invocation agent.ToolIn
 	}
 	var executed ExecuteResult
 	if invocation.Resume != nil {
-		if invocation.Resume.Kind != agent.ToolSuspensionApproval || invocation.Resume.ExecutionKey == "" {
-			return agent.ToolResult{}, lifecycleError(ErrInvalidConfiguration, nil, "agent bridge resume", "", "unsupported or incomplete tool suspension")
+		// The kind is not checked here. The executor dispatches on it, and an
+		// application may define kinds this package does not know about.
+		if invocation.Resume.Kind == "" || invocation.Resume.ExecutionKey == "" {
+			return agent.ToolResult{}, lifecycleError(ErrInvalidConfiguration, nil, "agent bridge resume", "", "incomplete tool suspension")
 		}
-		executed, err = t.executor.ResumeApproval(ctx, ResumeApprovalRequest{Execute: request, ExecutionKey: invocation.Resume.ExecutionKey, Approval: ApprovalResume{RequestRef: permission.RequestKey(invocation.Resume.RequestRef), ResumeToken: permission.ResumeToken(invocation.Resume.ResumeToken), Revision: invocation.Resume.Revision}})
+		executed, err = t.executor.Resume(ctx, ResumeRequest{
+			Execute: request, ExecutionKey: invocation.Resume.ExecutionKey,
+			Suspension: Suspension{
+				Kind: invocation.Resume.Kind, RequestRef: invocation.Resume.RequestRef,
+				ResumeToken: invocation.Resume.ResumeToken, Revision: invocation.Resume.Revision,
+			},
+		})
 	} else {
 		executed, err = t.executor.Execute(ctx, request)
 	}
-	if executed.Blocker != nil {
-		return agent.ToolResult{}, &agent.ToolSuspensionError{Suspension: agent.ToolSuspension{Kind: agent.ToolSuspensionApproval, ExecutionKey: executed.Prepared.ExecutionKey, RequestRef: string(executed.Blocker.RequestRef), ResumeToken: string(executed.Blocker.ResumeToken), Revision: executed.Blocker.Revision, StepNumber: executed.Prepared.StepNumber, Ordinal: executed.Prepared.Ordinal}, Cause: err}
+	// A parked execution is reported to the runtime as a suspension rather than a
+	// failure, so the run is checkpointed and can be continued instead of ended.
+	if executed.Suspension != nil {
+		return agent.ToolResult{}, &agent.ToolSuspensionError{Suspension: agent.ToolSuspension{
+			Kind: executed.Suspension.Kind, ExecutionKey: executed.Prepared.ExecutionKey,
+			RequestRef: executed.Suspension.RequestRef, ResumeToken: executed.Suspension.ResumeToken,
+			Revision:   executed.Suspension.Revision,
+			StepNumber: executed.Prepared.StepNumber, Ordinal: executed.Prepared.Ordinal,
+		}, Cause: err}
 	}
 	if err != nil {
 		return agent.ToolResult{}, err

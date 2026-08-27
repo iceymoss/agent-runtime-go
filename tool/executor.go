@@ -81,6 +81,74 @@ func (e *Executor) Execute(ctx context.Context, request ExecuteRequest) (Execute
 	return e.executePrepared(ctx, prepared, entry, entered)
 }
 
+// Resume continues one parked execution.
+//
+// It dispatches on the suspension's kind rather than assuming every pause is an
+// approval: an approval is re-authorized against the permission record, and any
+// other kind is handed back to the tool, which owns whatever it was waiting on.
+// That is what lets an application define suspension reasons this package does
+// not know about.
+func (e *Executor) Resume(ctx context.Context, request ResumeRequest) (ExecuteResult, error) {
+	if request.Suspension.Kind == agent.ToolSuspensionApproval {
+		return e.ResumeApproval(ctx, ResumeApprovalRequest{
+			Execute: request.Execute, ExecutionKey: request.ExecutionKey,
+			Approval: ApprovalResume{
+				RequestRef:  permission.RequestKey(request.Suspension.RequestRef),
+				ResumeToken: permission.ResumeToken(request.Suspension.ResumeToken),
+				Revision:    request.Suspension.Revision,
+			},
+		})
+	}
+	return e.resumeSuspended(ctx, request)
+}
+
+// resumeSuspended re-arms a parked execution and invokes the tool again with its
+// own handle, under the fence the execution was prepared at.
+//
+// Reusing the original fence is deliberate: the resumed call is the same
+// execution, so its ledger writes must be authorized the same way the first
+// attempt's were, even though a different worker may be running it.
+func (e *Executor) resumeSuspended(ctx context.Context, request ResumeRequest) (ExecuteResult, error) {
+	if request.ExecutionKey == "" || request.Suspension.Kind == "" {
+		return ExecuteResult{}, lifecycleError(ErrInvalidConfiguration, nil, "resume", request.ExecutionKey, "an execution key and a suspension kind are required")
+	}
+	if err := validateInvocation(request.Execute.Invocation); err != nil {
+		return ExecuteResult{}, err
+	}
+	record, err := e.ledger.Load(ctx, request.ExecutionKey)
+	if err != nil {
+		return ExecuteResult{}, lifecycleError(ErrExecutionConflict, err, "resume", request.ExecutionKey, "parked execution is unavailable")
+	}
+	if err := validateResumeInvocation(request.Execute.Invocation, record.Prepared); err != nil {
+		return ExecuteResult{Prepared: record.Prepared, Status: record.Status}, err
+	}
+	if record.Status != StatusSuspended {
+		return e.existing(record)
+	}
+	if record.Suspension == nil || *record.Suspension != request.Suspension {
+		return ExecuteResult{Prepared: record.Prepared, Status: record.Status}, lifecycleError(ErrExecutionConflict, nil, "resume", request.ExecutionKey, "handle does not match the parked execution")
+	}
+	prepared, entry, entered, immediate, err := e.prepare(ctx, invocationFromPrepared(record.Prepared))
+	if err != nil {
+		return ExecuteResult{}, err
+	}
+	if immediate != nil {
+		return ExecuteResult{}, lifecycleError(ErrExecutionConflict, nil, "resume", prepared.ExecutionKey, "preflight no longer requires execution")
+	}
+	if !samePrepared(record.Prepared, prepared) {
+		return ExecuteResult{Prepared: prepared, Status: record.Status}, lifecycleError(ErrExecutionConflict, nil, "resume", prepared.ExecutionKey, "prepared execution changed")
+	}
+	if _, err := e.ledger.Resume(ctx, prepared.ExecutionKey, prepared.FenceToken); err != nil {
+		return ExecuteResult{Prepared: prepared}, lifecycleError(ErrStaleFence, err, "resume", prepared.ExecutionKey, "parked execution could not be re-armed")
+	}
+	resume := &agent.ToolSuspension{
+		Kind: request.Suspension.Kind, ExecutionKey: prepared.ExecutionKey,
+		RequestRef: request.Suspension.RequestRef, ResumeToken: request.Suspension.ResumeToken,
+		Revision: request.Suspension.Revision, StepNumber: prepared.StepNumber, Ordinal: prepared.Ordinal,
+	}
+	return e.invokeTool(ctx, prepared, entry, entered, resume)
+}
+
 // ResumeApproval revalidates one resolved approval against the exact prepared
 // execution before crossing the effect boundary.
 func (e *Executor) ResumeApproval(ctx context.Context, request ResumeApprovalRequest) (ExecuteResult, error) {
@@ -158,12 +226,24 @@ func (e *Executor) executePrepared(ctx context.Context, prepared PreparedExecuti
 	if record.Status != StatusRunning || record.FenceToken != prepared.FenceToken {
 		return ExecuteResult{Prepared: prepared}, lifecycleError(ErrExecutionConflict, nil, "begin", prepared.ExecutionKey, "ledger did not return the running execution")
 	}
+	return e.invokeTool(ctx, prepared, entry, entered, nil)
+}
+
+// invokeTool runs an execution that is already armed in the ledger and records
+// whatever it produced: a result, a failure, or a suspension.
+//
+// resume is non-nil when a parked execution is being continued, and is handed to
+// the tool so it can recognize the work it started rather than starting it again.
+func (e *Executor) invokeTool(ctx context.Context, prepared PreparedExecution, entry registration, entered []Interceptor, resume *agent.ToolSuspension) (ExecuteResult, error) {
 	e.observe(PhaseExecute, prepared)
-	result, toolErr := executeTool(ctx, entry.tool, prepared)
+	result, toolErr := executeTool(ctx, entry.tool, prepared, resume)
+	if suspension, ok := agent.AsToolSuspension(toolErr); ok {
+		return e.parkExecution(ctx, prepared, suspension, toolErr)
+	}
 	if toolErr != nil {
 		return e.finishError(ctx, entered, prepared, toolErr)
 	}
-	result, err = e.runAfter(ctx, entered, prepared, result)
+	result, err := e.runAfter(ctx, entered, prepared, result)
 	if err != nil {
 		if hookErr := e.runErrorHooks(ctx, entered, prepared, err); hookErr != nil {
 			err = errors.Join(err, hookErr)
@@ -175,7 +255,7 @@ func (e *Executor) executePrepared(ctx context.Context, prepared PreparedExecuti
 		return ExecuteResult{Prepared: prepared, Status: StatusUnknown}, err
 	}
 	e.observe(PhaseRecord, prepared)
-	record, err = e.ledger.Complete(ctx, CompleteExecution{ExecutionKey: prepared.ExecutionKey, FenceToken: prepared.FenceToken, Result: &result})
+	record, err := e.ledger.Complete(ctx, CompleteExecution{ExecutionKey: prepared.ExecutionKey, FenceToken: prepared.FenceToken, Result: &result})
 	if err != nil {
 		return ExecuteResult{Prepared: prepared, Status: StatusUnknown}, lifecycleError(ErrExecutionUnknown, err, "complete", prepared.ExecutionKey, "effect finished but durable completion failed")
 	}
@@ -307,7 +387,13 @@ func (e *Executor) authorize(ctx context.Context, request ExecuteRequest, prepar
 			return nil, lifecycleError(ErrApprovalPending, nil, "authorize", prepared.ExecutionKey, "permission service omitted suspension blocker")
 		}
 		blocker := *result.Blocker
-		return &ExecuteResult{Prepared: prepared, Status: StatusPrepared, Blocker: &blocker}, nil
+		// Both views are reported: Blocker for callers that only handle
+		// approvals, Suspension for the general resume path.
+		suspension := Suspension{
+			Kind: agent.ToolSuspensionApproval, RequestRef: string(blocker.RequestRef),
+			ResumeToken: string(blocker.ResumeToken), Revision: blocker.Revision,
+		}
+		return &ExecuteResult{Prepared: prepared, Status: StatusPrepared, Blocker: &blocker, Suspension: &suspension}, nil
 	default:
 		return nil, lifecycleError(ErrPermissionDenied, nil, "authorize", prepared.ExecutionKey, "permission service returned an unknown decision")
 	}
@@ -407,13 +493,35 @@ func validateResult(result agent.ToolResult, callID, name string) error {
 	return nil
 }
 
-func executeTool(ctx context.Context, implementation agent.Tool, prepared PreparedExecution) (result agent.ToolResult, err error) {
+// parkExecution records a suspension instead of an outcome.
+//
+// The interceptors' error hooks deliberately do not run: nothing failed, and an
+// After hook has no result to process yet. Both will run when the resumed
+// execution actually finishes.
+func (e *Executor) parkExecution(ctx context.Context, prepared PreparedExecution, suspension agent.ToolSuspension, cause error) (ExecuteResult, error) {
+	if suspension.Kind == "" {
+		return ExecuteResult{Prepared: prepared, Status: StatusRunning}, lifecycleError(ErrResultInvariant, cause, "suspend", prepared.ExecutionKey, "suspension has no kind")
+	}
+	handle := Suspension{Kind: suspension.Kind, RequestRef: suspension.RequestRef, ResumeToken: suspension.ResumeToken, Revision: suspension.Revision}
+	if _, err := e.ledger.Suspend(ctx, SuspendExecution{ExecutionKey: prepared.ExecutionKey, FenceToken: prepared.FenceToken, Suspension: handle}); err != nil {
+		// The tool has already started outside work but the park could not be
+		// recorded, so nobody can prove whether it will finish.
+		return ExecuteResult{Prepared: prepared, Status: StatusUnknown}, lifecycleError(ErrExecutionUnknown, errors.Join(cause, err), "suspend", prepared.ExecutionKey, "execution parked but the handle could not be recorded")
+	}
+	stored := handle
+	return ExecuteResult{Prepared: prepared, Status: StatusSuspended, Suspension: &stored}, lifecycleError(ErrExecutionSuspended, cause, "suspend", prepared.ExecutionKey, "execution is waiting to be resumed")
+}
+
+func executeTool(ctx context.Context, implementation agent.Tool, prepared PreparedExecution, resume *agent.ToolSuspension) (result agent.ToolResult, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = &panicError{value: fmt.Sprint(recovered), stack: debug.Stack()}
 		}
 	}()
-	return implementation.Execute(ctx, agent.ToolInvocation{CallID: prepared.CallID, Name: prepared.ToolName, RawInput: prepared.CanonicalInput, ExecutionKey: prepared.ExecutionKey})
+	return implementation.Execute(ctx, agent.ToolInvocation{
+		CallID: prepared.CallID, Name: prepared.ToolName, RawInput: prepared.CanonicalInput,
+		ExecutionKey: prepared.ExecutionKey, Resume: resume,
+	})
 }
 
 type panicError struct {
