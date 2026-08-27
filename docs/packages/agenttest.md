@@ -102,6 +102,44 @@ PASS
 ok  	example/tooltest	0.006s
 ```
 
+## 持久化端口一致性套件
+
+除了 Model 和 Tool，`agenttest` 还为运行时的**持久化端口**提供了一致性套件。它们的存在理由和上面一样，但更重要：这些端口的实现错了不会报错，只会在崩溃、并发或重试的那一刻悄悄丢工作、重复副作用或多算一次钱。
+
+| 套件 | 验证的端口 | 典型失败模式 |
+|---|---|---|
+| `TestCheckpointStore` | `agent.CheckpointStore` | 已提交的工具被重跑；过期 guard 仍能写入 |
+| `TestDurableStore` | `durable.Store` + `ExecutionLedger` + `UsageLedger` | 僵尸 worker 覆盖新 worker；unknown 副作用被自动重放；用量重复计费 |
+| `TestEventStore` | `event.Store` | 序号分配两次导致 replay 跳历史；非当前租约也能 ack 从而丢事件；重试延迟不生效变成热循环 |
+| `TestToolExecutionLedger` | `tool.ExecutionLedger` | 一次授权的调用两次越过副作用边界；被拒绝或状态未知的执行仍被执行 |
+| `TestPermissionStore` | `permission.Store` | 过期审批仍可批准；grant 授权了它没被授权的调用 |
+| `TestMessageService` | `message.Service` | 工具结果丢失导致下一轮上下文不合法；redact 变成删除从而重排历史 |
+| `TestSubagentStore` | `subagent.Store` | depth / fanout / 树预算被放宽；child 被跑两次 |
+| `TestSessionService` / `TestSessionRunStore` | `session.Service` / `session.Store` | 分支重复 merge 导致 turn 重复；claim 被同时发给两个 worker |
+| `TestManifestStore` | `coordinator.ManifestStore` | 一个 definition digest 描述了两套组合；跨租户解析出别人的 generation |
+
+每个套件都接受一个工厂函数，并在**每个子测试**里要一个全新的空实现：
+
+```go
+func TestMyDurableStoreConformance(t *testing.T) {
+	agenttest.TestDurableStore(t, func(t *testing.T) agenttest.DurableStore {
+		return openMyStore(t)   // 每次返回一个干净实例
+	})
+}
+```
+
+`permission` 的工厂多接一个时钟参数，因为过期是契约的一部分，用真实时间没法确定性地测：
+
+```go
+agenttest.TestPermissionStore(t, func(t *testing.T, clock permission.Clock) permission.Store {
+	return openMyApprovalStore(t, clock.Now)
+})
+```
+
+库自带的内存参考实现全部跑这些套件（见各包的 `conformance_external_test.go`），所以**套件和参考实现不会各自漂移**。`demo/icoder` 的 SQLite 适配器跑的是同一份套件。
+
+套件只断言端口承诺的可观察行为，不假设任何具体的状态/相位策略、存储结构或错误文本——判定一律用 `errors.Is` 匹配包级哨兵错误。
+
 ## 常见问题
 
 **Q: 套件发给模型的请求长什么样？**

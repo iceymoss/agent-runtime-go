@@ -130,6 +130,24 @@ wakes delivered: 1
 - `Runner.Run` 返回错误时不会丢任务：Service 自动转为 `ChildSuspended` 且 `Retryable: true`，等 `Reconcile` 回收后重试。
 - 终态先落库、再投递唤醒：唤醒失败只影响 `ReconcileReport.WakeFailures`，事实不丢，下轮 `Reconcile` 重投。
 
+## 自己写持久化适配器
+
+depth、fanout、环检测和树预算是**安全上限**，不是记账。适配器如果自己重写一遍，出错时不会报警，只会悄悄允许更深的树、更宽的并发或更多的花费。所以这些判定以纯函数导出，适配器直接调用：
+
+```go
+child := subagent.NewChildRef(tenant, request.RequestKey, depth)
+if err := subagent.ValidateNoCycle(request.Parent.RunKey, child.RunKey, s.parentLookup(tenant)); err != nil { ... }
+if err := subagent.ValidateDepth(depth, budget.Limits); err != nil { ... }
+if err := subagent.ValidateFanout(directChildren, budget.Limits); err != nil { ... }
+budget, err = budget.Reserve(request.Reserve)     // 预算在 child 跑之前就被占住
+```
+
+可用的入口：`ValidateSpawn`、`SpecDigest`（幂等指纹）、`DeriveRunKey` / `DeriveRelationshipKey` / `DeriveSessionKey`（确定性身份派生）、`NewChildRef`、`EffectiveLimits`、`ValidateDepth` / `ValidateFanout` / `ValidateNoCycle`（配合 `ParentLookup`）、`ValidateUsage`、`ExceedsReservation`，以及 `BudgetSnapshot.Reserve` / `Settle`。
+
+适配器只负责存储拥有的部分：**查父节点**、**数兄弟节点**、**原子写入**。图的遍历由存储提供（`ParentLookup`），「什么算环」由库判定。
+
+写完用 `agenttest.TestSubagentStore` 验收。
+
 ## 常见问题
 
 **Q: 重试 `Spawn` 报 `ErrIdempotencyConflict`，不是说幂等吗？**

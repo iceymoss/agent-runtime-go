@@ -93,6 +93,27 @@ Key behavior:
 - All boundaries deep-copy: incoming `Parts`/`AdapterState` and returned snapshots share no memory; mutating slices afterward does not corrupt storage.
 - `NewMemory` is for tests and examples only; production needs a database-backed `Service` with revision/fence compare and write in the same transaction.
 
+## Writing your own storage adapter
+
+`Memory` is a reference, not the only implementation. Moving to a database does not mean rewriting the state machine: the rules are exported as pure functions, so an adapter is just load, apply, and write back under compare-and-set.
+
+```go
+func (s *SQLStore) SaveSnapshot(ctx context.Context, command message.SaveCommand) (message.Snapshot, error) {
+	// The whole cycle runs in one transaction, so the revision the state machine
+	// compared against is the revision that is still stored when the write lands.
+	current, err := s.load(ctx, tx, command.TenantKey, command.MessageKey)
+	next, err := message.ApplySave(current, command, time.Now().UTC())   // every legality decision
+	if err := message.ValidateBranchCorrelation(next, siblings); err != nil { ... }
+	return next, s.write(ctx, tx, next)
+}
+```
+
+Available entry points: `ApplyCreate` / `ApplySave` / `ApplyTombstone` (transitions), `SameCreate` (create idempotency), `ValidateBranchCorrelation` (tool call and result pairing across a branch), `ValidateCreate` / `ValidateSave` / `ValidateSnapshot` / `ValidTransition`, `ValidateGetQuery` / `ValidateListBranchQuery` / `ValidateListVisibleQuery`, `VisibleAt`, `SortBranch` / `SortVisible`, and `CloneSnapshot` / `CloneParts`.
+
+The adapter owns only the three things storage genuinely owns: **allocating the branch position** (only storage can see the branch), **comparing revisions atomically**, and **reading rows back in the required order**.
+
+Verify the result with `agenttest.TestMessageService` - the bundled `Memory` runs the same suite.
+
 ## FAQ
 
 **Q: `Create` returns `ErrInvalidCommand` with "tenant, keys, attempt, and fence are required"?**

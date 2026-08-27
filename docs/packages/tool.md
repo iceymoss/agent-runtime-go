@@ -176,6 +176,35 @@ succeeded saved
 - 示例没有注入 `ExecutorOptions.Permission`，授权阶段被跳过；接入 `permission.Service` 后，deny 会记账为失败，ask 会返回 `ErrApprovalPending` 和 `ExecuteResult.Blocker`。
 - 用相同的 `ExecuteRequest` 再调用一次，`Executor` 会从 ledger 读到已完成记录直接返回，不会再次执行工具。
 
+## 挂起与恢复
+
+工具不是只有「成功」和「失败」两种结局。有些工具会把活儿交出去——委派给 child agent、等一个 webhook、把任务丢进队列——它启动了工作，但现在给不出结果。把这种情况记成失败会丢掉恢复所需的句柄，记成 unknown 又会禁止本来完全安全的重放。所以它有自己的状态：`StatusSuspended`。
+
+工具通过返回 `agent.ToolSuspensionError` 表达挂起：
+
+```go
+func (t *delegateTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
+	if invocation.Resume == nil {
+		handle := t.startChild(ctx, invocation.RawInput)   // 启动外部工作
+		return agent.ToolResult{}, &agent.ToolSuspensionError{Suspension: agent.ToolSuspension{
+			Kind: agent.ToolSuspensionExternal, RequestRef: handle, ResumeToken: token, Revision: 1,
+		}}
+	}
+	// 恢复时工具拿回自己签发的句柄，认领这份工作而不是重新开始
+	return t.collect(ctx, invocation.Resume.RequestRef)
+}
+```
+
+接下来发生的事：
+
+1. Executor 调 `ExecutionLedger.Suspend` 把执行停在 `StatusSuspended` 并存下句柄。拦截器的 `After` / `OnError` **不会**触发——什么都没失败，也还没有结果可处理，它们会在真正结束时才跑。
+2. Bridge 把它投影成根包的 `ToolSuspensionError`，运行时据此 checkpoint 整个 run，返回 `suspended` + `tool_suspended`。
+3. 后续 attempt 通过 `DurableRun.ToolResume` 交回同一个句柄，Executor `Resume` 用**原来那个 fence** 重新武装执行，再带着 `invocation.Resume` 调一次工具。
+
+`Kind` 由 Executor 分派：`ToolSuspensionApproval` 走 permission 服务重新校验，其他一律交还给工具。运行时本身从不解释 `Kind`，所以应用可以定义自己的挂起类型，只要恢复方认识它。
+
+恢复必须带上 Executor 当初签发的**那一个**句柄：token 或 revision 对不上会返回 `ErrExecutionConflict`，否则任何知道 execution key 的人都能重启别人的工作。
+
 ## 常见问题
 
 **Q: 这个包和根包的 `agent.Registry` 是什么关系，工具要注册两次吗？**

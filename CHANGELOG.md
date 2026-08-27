@@ -8,6 +8,97 @@ While the project is at `v0.x`, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- `durable.CheckpointAdapter` (`durable.NewCheckpointAdapter`): the official
+  bridge that exposes a `durable.Store` plus its `ExecutionLedger` through the
+  root `agent.CheckpointStore` port, so `Agent.Run` can execute durably against
+  any durable adapter without the application re-deriving the run phase state
+  machine. Store errors are wrapped so both the `durable` sentinels and the root
+  sentinels (`agent.ErrCheckpointConflict`, `agent.ErrToolExecutionUnknown`,
+  `agent.ErrInvalidRunTransition`) remain testable with `errors.Is`.
+- `durable.EffectReplayer`: optional `ExecutionLedger` extension that re-arms an
+  effect a revoked lease left in `EffectUnknown`, used only for tools whose
+  `ReplayPolicy` proves the retry is safe. `durable.MemoryStore` implements it.
+- `agenttest` conformance suites for every persistence port, so an application
+  can verify its own storage adapter against the same contract the library's
+  reference implementations are held to: `TestCheckpointStore`,
+  `TestDurableStore`, `TestEventStore`, `TestToolExecutionLedger`,
+  `TestPermissionStore`, `TestMessageService`, `TestSubagentStore`,
+  `TestSessionService`, `TestSessionRunStore`, and `TestManifestStore`. Each
+  in-memory reference now runs its suite, so a suite and its reference cannot
+  drift apart.
+- `tool.MemoryLedger` (`tool.NewMemoryLedger`): the in-memory reference
+  `ExecutionLedger` the package was missing, so an executor can be assembled and
+  tested without a database and there is one authoritative statement of what the
+  execution lifecycle transitions mean.
+- General tool suspension. A tool can now pause for reasons other than an
+  approval - a delegated child run, a webhook, a queued job - and be resumed with
+  the exact handle it issued:
+  - `agent.ToolSuspensionExternal` joins `agent.ToolSuspensionApproval`.
+    `ToolSuspensionKind` is documented as application-extensible: the runtime
+    persists the handle and hands it back without interpreting it.
+  - `tool.Suspension`, `tool.SuspendExecution`, `tool.StatusSuspended`,
+    `tool.ExecutionRecord.Suspension`, `tool.ExecuteResult.Suspension`,
+    `tool.ResumeRequest`, `tool.ErrExecutionSuspended`, and
+    `(*tool.Executor).Resume`, which dispatches on the suspension's kind:
+    approvals are re-authorized against the permission record, every other kind
+    is handed back to the tool.
+  - `tool.NewAgentRegistry`'s bridge no longer rejects non-approval suspensions,
+    and passes `ToolInvocation.Resume` through to the tool so it can claim the
+    work it started instead of starting it again.
+  - A resumed execution re-arms under its original fence, so its ledger writes
+    are authorized the same way the first attempt's were.
+- Exported state machines so a storage adapter is a small amount of SQL rather
+  than a second copy of the rules:
+  - `message.ApplyCreate` / `ApplySave` / `ApplyTombstone`, `SameCreate`,
+    `ValidateBranchCorrelation`, the `Validate*` query helpers, `VisibleAt`,
+    `SortBranch` / `SortVisible`, and `CloneSnapshot` / `CloneParts`.
+  - `subagent.ValidateSpawn`, `SpecDigest`, `DeriveRunKey` /
+    `DeriveRelationshipKey` / `DeriveSessionKey`, `NewChildRef`,
+    `EffectiveLimits`, `ValidateDepth` / `ValidateFanout` / `ValidateNoCycle`
+    (with `ParentLookup`), `ValidateUsage`, `ExceedsReservation`, and
+    `BudgetSnapshot.Reserve` / `Settle` for tree-budget accounting.
+  - `session.ValidStatusTransition`, `KnownStatus`, `ValidBranchTransition`,
+    `ValidContextPivot`, `AddNonNegative`, `CloneSnapshot`, `CloneMessages`,
+    plus `SameCreate` and `DeriveBranchKey` for the aggregate, and
+    `SameAdmission`, `CancelSupersedes`, `KnownCancelMode`,
+    `TerminalExecutionState`, and `ClaimBefore` for the run queue - the rules a
+    `session.Store` adapter would otherwise have to restate from memory, where a
+    missing case means a run executed twice or a cancellation walked backwards.
+  The `message`, `subagent`, and `session` reference implementations were
+  rewritten on top of these, so there is exactly one implementation of each rule.
+
+### Changed
+
+- **BREAKING** `tool.ExecutionLedger` gained `Suspend(context.Context,
+  SuspendExecution) (ExecutionRecord, error)` and `Resume(context.Context,
+  string, uint64) (ExecutionRecord, error)`. A parked execution is neither failed
+  nor ambiguous, so it needs a state and a stored handle of its own.
+  **Migration:** implementations must add both methods. `Suspend` requires a
+  running execution at the caller's fence and a non-empty suspension kind;
+  `Resume` requires a suspended execution at the same fence and returns it to
+  running. `Complete` must clear the stored handle. `tool.MemoryLedger` and the
+  `demo/icoder` SQLite adapter show the shape, and
+  `agenttest.TestToolExecutionLedger` verifies it.
+
+### Fixed
+
+- `durable.CheckpointAdapter.BeginTool` returned an error for an execution whose
+  result was already committed. A crash between committing an effect and
+  committing its checkpoint therefore left the run permanently unresumable
+  instead of replaying the stored result. It now returns the completed execution.
+- `event.MemoryStore` and `permission.MemoryStore` are unchanged; the new suites
+  confirmed both already met their contracts.
+- `durable`'s prepared-effect identity included the attempt key and the
+  preparation timestamp, so `PrepareEffect` reported a conflict when a resumed
+  attempt re-prepared an open tool batch - which every resume does. The effect
+  digest now covers identity only; attempt key and prepared time are provenance.
+  **Migration:** stored `EffectRecord.Digest` values change. The digest is only
+  used for conflict detection inside a ledger, and the deduplication anchor
+  (`ExecutionKey`) is unchanged, so existing records stay addressable; a store
+  that persists the digest should recompute or accept a one-time mismatch.
+
 ## [0.1.1] - 2026-08-06
 
 ### Added

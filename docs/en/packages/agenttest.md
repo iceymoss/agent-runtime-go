@@ -102,6 +102,44 @@ PASS
 ok  	example/tooltest	0.006s
 ```
 
+## Persistence port conformance suites
+
+Besides Model and Tool, `agenttest` provides conformance suites for the runtime's **persistence ports**. The reason is the same as above but sharper: getting one of these wrong does not produce an error, it quietly loses work, repeats a side effect, or bills twice - and only at the moment a process crashes, two workers race, or a command is retried.
+
+| Suite | Port | What it catches |
+|---|---|---|
+| `TestCheckpointStore` | `agent.CheckpointStore` | a committed tool being run again; a stale guard still able to write |
+| `TestDurableStore` | `durable.Store` + `ExecutionLedger` + `UsageLedger` | a zombie worker overwriting a live one; an unknown effect replayed automatically; usage counted twice |
+| `TestEventStore` | `event.Store` | a sequence allocated twice so replay skips history; a lease that is no longer current still acknowledging and losing an event; a retry delay ignored, turning an outage into a hot loop |
+| `TestToolExecutionLedger` | `tool.ExecutionLedger` | one authorized call crossing the effect boundary twice; a refused or unknown execution still running |
+| `TestPermissionStore` | `permission.Store` | a lapsed approval still being answerable; a grant authorizing a call it was not given for |
+| `TestMessageService` | `message.Service` | a lost tool result making the next turn incoherent; redaction deleting rather than tombstoning and renumbering history |
+| `TestSubagentStore` | `subagent.Store` | depth, fan-out, or tree budget silently widened; a child run twice |
+| `TestSessionService` / `TestSessionRunStore` | `session.Service` / `session.Store` | a branch merging twice and duplicating a turn; one claim handed to two workers |
+| `TestManifestStore` | `coordinator.ManifestStore` | one definition digest describing two compositions; a generation resolved from the wrong tenant |
+
+Each suite takes a factory and asks it for a fresh, empty implementation **per subtest**:
+
+```go
+func TestMyDurableStoreConformance(t *testing.T) {
+	agenttest.TestDurableStore(t, func(t *testing.T) agenttest.DurableStore {
+		return openMyStore(t)   // a clean instance each time
+	})
+}
+```
+
+The permission factory also takes a clock, because expiry is part of the contract and wall-clock time cannot test it deterministically:
+
+```go
+agenttest.TestPermissionStore(t, func(t *testing.T, clock permission.Clock) permission.Store {
+	return openMyApprovalStore(t, clock.Now)
+})
+```
+
+Every in-memory reference implementation in the library runs these suites (see each package's `conformance_external_test.go`), so **the suite and the reference cannot drift apart**. The SQLite adapters in `demo/icoder` run the same suites.
+
+The suites assert only the observable behavior a port promises. They do not assume a particular status or phase policy, storage layout, or error text: every check matches a package-level sentinel with `errors.Is`.
+
 ## FAQ
 
 **Q: What does the request the suite sends to the model look like?**

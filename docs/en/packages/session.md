@@ -110,6 +110,25 @@ Key behavior:
 - `CommitMerge` only supports fast-forward (an empty `MergeKind` defaults to `MergeKindFastForward`): the branch must be `BranchStatusReadyToMerge`, and the session revision must still equal the branch `BaseRevision`.
 - `NewMemory` is a reference implementation only; data is lost on process restart. Production needs a database-backed `Service` (and host-layer `Store`) with the same CAS and idempotency semantics.
 
+## Writing your own storage adapter
+
+Session status and branch status are small state machines, but they are the machines that decide whether a finished conversation can be reopened and whether a branch that already merged can merge again. Both tables are exported:
+
+```go
+if !session.ValidStatusTransition(current.Status, command.Status) { ... }
+if !session.ValidBranchTransition(branch.Status, session.BranchStatusMerged) { ... }
+if !session.ValidContextPivot(command.ContextPivot, revision+1) { ... }
+next.PromptTokens, ok = session.AddNonNegative(next.PromptTokens, command.PromptTokens)
+```
+
+The entry points come in two groups.
+
+For the session aggregate (`Service`): `ValidStatusTransition`, `KnownStatus`, `ValidBranchTransition`, `ValidContextPivot`, `AddNonNegative` (the non-negative and overflow guard on usage totals), `SameCreate` (whether a replayed creation is the same command), `DeriveBranchKey` (branch identity is derived from the run; an adapter that generated its own key would give one run two branches, each claiming the right to merge), `CloneSnapshot`, and `CloneMessages`.
+
+For the run queue (`Store`): `SameAdmission` (admission is idempotent by request id; the arrival timestamp is excluded because a retry legitimately arrives later), `CancelSupersedes` and `KnownCancelMode` (cancellation only escalates: attempt, then suspend, then abandon), `TerminalExecutionState` (a terminal run accepts no outcome, no cancellation, and no resume), and `ClaimBefore` (the queue's total order: priority, arrival, then keys - two workers scanning the same queue must agree on what "next" means).
+
+Verify the two ports with `agenttest.TestSessionService` (the session and branch aggregate) and `agenttest.TestSessionRunStore` (the durable run queue) - the bundled `Memory` and `MemoryRunStore` run the same suites.
+
 ## FAQ
 
 **Q: What happens if `Create` is called twice with the same `SessionKey`?**

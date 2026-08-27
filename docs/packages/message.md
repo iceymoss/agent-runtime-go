@@ -93,6 +93,26 @@ complete 2 1
 - 所有边界都做深拷贝：传入的 `Parts`/`AdapterState` 和返回的快照互不共享内存，事后修改切片不会污染存储。
 - `NewMemory` 仅供测试与示例；生产环境需要基于数据库实现 `Service`，并保证 revision/fence 比较与写入在同一事务内。
 
+## 自己写持久化适配器
+
+`Memory` 只是参考实现。要换成数据库，不需要把状态机再写一遍——规则以纯函数形式导出，适配器只做「加载 → Apply → 带 CAS 写回」：
+
+```go
+func (s *SQLStore) SaveSnapshot(ctx context.Context, command message.SaveCommand) (message.Snapshot, error) {
+	// 整个循环放在一个事务里，保证状态机比对的 revision 就是落盘时的 revision
+	current, err := s.load(ctx, tx, command.TenantKey, command.MessageKey)
+	next, err := message.ApplySave(current, command, time.Now().UTC())   // 全部合法性判定在这里
+	if err := message.ValidateBranchCorrelation(next, siblings); err != nil { ... }
+	return next, s.write(ctx, tx, next)
+}
+```
+
+可用的入口：`ApplyCreate` / `ApplySave` / `ApplyTombstone`（状态转移）、`SameCreate`（Create 幂等比对）、`ValidateBranchCorrelation`（跨分支的 tool call/result 配对）、`ValidateCreate` / `ValidateSave` / `ValidateSnapshot` / `ValidTransition`、`ValidateGetQuery` / `ValidateListBranchQuery` / `ValidateListVisibleQuery`、`VisibleAt`、`SortBranch` / `SortVisible`、`CloneSnapshot` / `CloneParts`。
+
+适配器只负责存储真正拥有的三件事：**分配分支序号**（只有存储能看见整条分支）、**原子比对 revision**、**按要求的顺序读回**。
+
+写完用 `agenttest.TestMessageService` 验收——库自带的 `Memory` 跑的是同一份套件。
+
 ## 常见问题
 
 **Q: `Create` 报 `ErrInvalidCommand`，提示 "tenant, keys, attempt, and fence are required"？**

@@ -110,6 +110,25 @@ revision: 0 -> 1
 - `CommitMerge` 只支持 fast-forward（`MergeKind` 留空会被默认为 `MergeKindFastForward`）：分支必须处于 `BranchStatusReadyToMerge`，且会话当前 revision 仍等于分支的 `BaseRevision`。
 - `NewMemory` 只是参考实现，进程重启即丢数据；生产环境需要用数据库自己实现 `Service`（以及宿主层的 `Store`），保持相同的 CAS 与幂等语义。
 
+## 自己写持久化适配器
+
+session 状态和分支状态都是小状态机，但它们决定的是「已完结的会话能不能被重新打开」和「已合并的分支能不能再合并一次」。这两个判定表以纯函数导出：
+
+```go
+if !session.ValidStatusTransition(current.Status, command.Status) { ... }
+if !session.ValidBranchTransition(branch.Status, session.BranchStatusMerged) { ... }
+if !session.ValidContextPivot(command.ContextPivot, revision+1) { ... }
+next.PromptTokens, ok = session.AddNonNegative(next.PromptTokens, command.PromptTokens)
+```
+
+可用的入口分两组。
+
+会话聚合（`Service`）：`ValidStatusTransition`、`KnownStatus`、`ValidBranchTransition`、`ValidContextPivot`、`AddNonNegative`（用量累加的非负与溢出保护）、`SameCreate`（判定重放的创建是否同一条命令）、`DeriveBranchKey`（分支身份由 run 推导，适配器自己生成 key 会让同一个 run 出现两条都声称可以合并的分支）、`CloneSnapshot`、`CloneMessages`。
+
+运行队列（`Store`）：`SameAdmission`（准入按 request id 幂等；创建时间被排除，因为重试的到达时间本来就不同）、`CancelSupersedes` 与 `KnownCancelMode`（取消只升级不降级：attempt → suspend → abandon）、`TerminalExecutionState`（终态既不接受结果也不接受取消或恢复）、`ClaimBefore`（队列的全序：优先级、到达时间、键。两个 worker 扫描同一个队列必须对「下一个是谁」得出同样答案）。
+
+两个端口分别用 `agenttest.TestSessionService`（会话与分支聚合）和 `agenttest.TestSessionRunStore`（durable 运行队列）验收——库自带的 `Memory` 和 `MemoryRunStore` 跑的是同一份套件。
+
 ## 常见问题
 
 **Q: `Create` 用同一个 `SessionKey` 调两次会怎样？**
