@@ -399,6 +399,33 @@ func (m *MemoryStore) MarkEffectUnknown(ctx context.Context, guard Guard, key Ex
 	return cloneEffect(record), nil
 }
 
+// ReplayEffect re-arms an effect that a revoked lease left unknown so a tool
+// whose ReplayPolicy proves the retry is safe can run again under the current
+// fence. Callers must have established that safety; the ledger cannot know it.
+func (m *MemoryStore) ReplayEffect(ctx context.Context, guard Guard, key ExecutionKey, startedAt time.Time) (EffectRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return EffectRecord{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, err := m.guardedLocked(guard, "replay effect"); err != nil {
+		return EffectRecord{}, err
+	}
+	record, ok := m.effects[key]
+	if !ok || record.RunKey != guard.RunKey {
+		return EffectRecord{}, durableError(ErrEffectNotFound, "replay effect", guard.RunKey, "")
+	}
+	if record.Status == EffectRunning && record.FenceToken == guard.FenceToken {
+		return cloneEffect(record), nil
+	}
+	if record.Status != EffectUnknown {
+		return EffectRecord{}, durableError(ErrInvalidTransition, "replay effect", guard.RunKey, "effect is not unknown")
+	}
+	record.Status, record.FenceToken, record.StartedAt, record.FinishedAt = EffectRunning, guard.FenceToken, startedAt, time.Time{}
+	m.effects[key] = record
+	return cloneEffect(record), nil
+}
+
 func (m *MemoryStore) LoadEffect(ctx context.Context, key ExecutionKey) (EffectRecord, error) {
 	if err := ctx.Err(); err != nil {
 		return EffectRecord{}, err
