@@ -11,6 +11,8 @@ import "github.com/iceymoss/agent-runtime-go/providers/openaicompat"
 `openaicompat.Model` is a full implementation of `agent.Model`. You give it a base URL and API key; it handles:
 
 - **SSE streaming:** streams from upstream by default, turning text deltas and tool-call fragments into canonical `agent.StreamChunk`s in real time;
+- **Structured output:** `ResponseFormat` is projected onto `response_format` (`json_object` or `json_schema`), and the capability is declared by default; narrow it with `WithCapabilities` if your endpoint cannot honor it, so requests are refused at assembly rather than silently answered with free-form text;
+- **Reasoning:** both `reasoning_content` and `reasoning` are read and turned into `PartReasoning`, and neither is ever sent back upstream — the providers that emit reasoning reject it as assistant input;
 - **Tool-call reassembly:** upstream may split one tool call's JSON args across many deltas; the adapter reassembles by index into a complete call before handing it to the runtime;
 - **Usage normalization:** maps inconsistent token fields across vendors (including cached and reasoning tokens) into `agent.Usage` so component sums equal `TotalTokens`;
 - **Error classification:** HTTP failures become `agent.ModelError` with retry semantics—401/403 → auth (not retryable), 429 → rate limit (retryable), 5xx → transport (retryable), other 4xx → rejected (not retryable).

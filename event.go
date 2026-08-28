@@ -11,10 +11,14 @@ import (
 type ObservationType string
 
 const (
-	ObservationTextDelta    ObservationType = "text_delta"
-	ObservationToolCall     ObservationType = "tool_call_start"
-	ObservationToolResult   ObservationType = "tool_result"
-	ObservationStepFinished ObservationType = "step_finish"
+	ObservationTextDelta ObservationType = "text_delta"
+	// ObservationReasoningDelta carries a model's thinking as it arrives. It is
+	// separate from ObservationTextDelta so a UI can render, hide, or redact it
+	// without having to guess which half of the stream it is looking at.
+	ObservationReasoningDelta ObservationType = "reasoning_delta"
+	ObservationToolCall       ObservationType = "tool_call_start"
+	ObservationToolResult     ObservationType = "tool_result"
+	ObservationStepFinished   ObservationType = "step_finish"
 )
 
 // Observation is a detached snapshot of non-authoritative runtime progress.

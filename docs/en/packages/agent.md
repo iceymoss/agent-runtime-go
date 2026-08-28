@@ -148,6 +148,45 @@ Tool errors come in two kinds with different semantics:
 - `ToolResult{IsError: true}`: model-visible, correctable business errors (e.g. "order not found"); the loop continues;
 - non-nil Go error from `Execute`: infrastructure failure; abort this run immediately.
 
+### Constrain the model's own output
+
+When the answer is parsed by code rather than read by a person — extraction, classification, routing, filling a form — prompting alone is not enough: one stray sentence around the JSON turns a working run into a parse error the runtime cannot repair. `ResponseFormat` asks the provider to enforce the shape:
+
+```go
+runner, err := agent.New(agent.Config{
+	Key: "extract", ModelName: "gpt-4o-mini", MaxSteps: 4,
+	ResponseFormat: &agent.ResponseFormat{
+		Kind:   agent.ResponseFormatJSONSchema,
+		Name:   "invoice",
+		Schema: json.RawMessage(`{"type":"object","properties":{"total":{"type":"number"}}}`),
+		Strict: true,
+	},
+}, model, registry)
+```
+
+`ResponseFormatJSON` only requires valid JSON and is supported more widely; `ResponseFormatJSONSchema` requires output conforming to the schema. `RunRequest.ResponseFormat` overrides per call, so one agent can chat normally and constrain its output only where a caller needs machine-readable data.
+
+If the model does not declare `Capabilities.StructuredOutput`, `agent.New` returns `ErrAgentConfigInvalid` — assembly-time failure rather than a surprise halfway through. **The runtime does not validate the model's output against the schema**; enforcement belongs to the provider, so an application that must be certain still parses and checks what it received.
+
+### Reasoning models
+
+Reasoning models (DeepSeek-R1, Qwen3-thinking, the o-series) report their thinking separately from their answer. The runtime carries it as `PartReasoning`:
+
+```go
+result, _ := runner.Run(ctx, agent.RunRequest{Messages: msgs})
+answer := result.Text                      // the answer alone, no thinking
+thinking := result.Messages[0].Reasoning() // the chain of thought
+```
+
+While streaming it arrives as `ObservationReasoningDelta`, separate from text, so a UI can collapse, hide, or discard it without guessing which half of the stream it is looking at.
+
+Two rules are worth remembering:
+
+- `Message.Text()` excludes reasoning, so `RunResult.Text` is always the clean answer.
+- **Adapters do not send reasoning back to the model.** Providers that emit it reject it as assistant input, and replaying a chain of thought as conversation changes the question being answered. History keeps it for display and audit.
+
+A model that produces reasoning without declaring `Capabilities.Reasoning` is a protocol error — the application has to decide whether to render or redact it before the first token arrives.
+
 ### Observe run progress
 
 `ObservationEmitter` exposes text deltas, tool start/end, and step completion for live UI.

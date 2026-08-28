@@ -148,6 +148,45 @@ tool := agent.MustNewTool("find_order", "按订单号查询订单", handler)
 - `ToolResult{IsError: true}`：模型可见、可修正的业务错误（如"订单不存在"），循环继续；
 - `Execute` 返回非 nil Go error：基础设施故障，立即中止本次运行。
 
+### 让模型按结构输出
+
+答案要交给代码解析而不是给人读时——抽取、分类、路由、填表——只靠 prompt 约束不够：JSON 外面多一句话就把一次成功的运行变成解析错误，而运行时无法修复它。用 `ResponseFormat` 让供应商去强制：
+
+```go
+runner, err := agent.New(agent.Config{
+	Key: "extract", ModelName: "gpt-4o-mini", MaxSteps: 4,
+	ResponseFormat: &agent.ResponseFormat{
+		Kind:   agent.ResponseFormatJSONSchema,
+		Name:   "invoice",
+		Schema: json.RawMessage(`{"type":"object","properties":{"total":{"type":"number"}}}`),
+		Strict: true,
+	},
+}, model, registry)
+```
+
+`ResponseFormatJSON` 只要求合法 JSON，兼容面更广；`ResponseFormatJSONSchema` 要求符合给定 schema。`RunRequest.ResponseFormat` 可以按次覆盖，所以同一个 Agent 平时正常对话、只在需要机器可读的那一次约束输出。
+
+模型没声明 `Capabilities.StructuredOutput` 时，`agent.New` 直接返回 `ErrAgentConfigInvalid`——装配期失败，而不是跑到一半才发现。**运行时不校验模型输出是否符合 schema**，强制是供应商的职责；真正要确定的应用仍然要自己解析和检查。
+
+### 推理模型的思维链
+
+推理模型（DeepSeek-R1、Qwen3-thinking、o 系列等）会把思考过程和答案分开返回。运行时用 `PartReasoning` 承载它：
+
+```go
+result, _ := runner.Run(ctx, agent.RunRequest{Messages: msgs})
+answer := result.Text                     // 只有答案，不含思考
+thinking := result.Messages[0].Reasoning() // 思考过程
+```
+
+流式时通过 `ObservationReasoningDelta` 单独下发，UI 可以折叠、隐藏或直接丢弃，不用去猜自己拿到的是哪半边。
+
+两条规则值得记住：
+
+- `Message.Text()` 不包含 reasoning，所以 `RunResult.Text` 永远是干净的答案；
+- **适配器不会把 reasoning 回传给模型**。产生 reasoning 的供应商基本都会拒绝把它当 assistant 输入，而且把思维链当对话重放会改变模型在回答的问题。历史里保留它是为了展示和审计。
+
+模型产出 reasoning 但没声明 `Capabilities.Reasoning` 会被判为协议错误——应用需要在第一个 token 到达之前就知道要不要渲染或脱敏。
+
 ### 观察运行进度
 
 `ObservationEmitter` 提供文本增量、工具开始/结束、步骤完成四类信号，用于 UI 实时展示。

@@ -111,6 +111,15 @@ func New(baseURL, apiKey string, opts ...Option) *Model {
 			ToolChoiceNone:     true,
 			ToolChoiceRequired: true,
 			ToolChoiceNamed:    true,
+			// response_format is part of the Chat Completions spec this adapter
+			// projects onto. A server that ignores it returns unconstrained text
+			// rather than failing, so point WithCapabilities at a narrower set if
+			// your endpoint cannot honor it and you would rather be refused.
+			StructuredOutput: true,
+			// Declared because the adapter surfaces reasoning_content when a
+			// provider sends it. A provider that never does simply produces
+			// messages without reasoning parts.
+			Reasoning: true,
 		},
 	}
 	for _, opt := range opts {
@@ -274,6 +283,7 @@ func (m *Model) consumeSSE(ctx context.Context, body io.ReadCloser, chunks chan<
 
 	var (
 		text      strings.Builder
+		reasoning strings.Builder
 		pending   = make(map[int]*pendingToolCall)
 		finish    string
 		modelName string
@@ -306,6 +316,12 @@ func (m *Model) consumeSSE(ctx context.Context, body io.ReadCloser, chunks chan<
 					usage = chunk.Usage
 				}
 				for _, choice := range chunk.Choices {
+					if delta := deltaReasoning(choice.Delta.ReasoningContent, choice.Delta.Reasoning); delta != "" {
+						reasoning.WriteString(delta)
+						if !emit(agent.StreamChunk{Type: agent.ChunkReasoning, TextDelta: delta}) {
+							return
+						}
+					}
 					if choice.Delta.Content != "" {
 						text.WriteString(choice.Delta.Content)
 						if !emit(agent.StreamChunk{Type: agent.ChunkText, TextDelta: choice.Delta.Content}) {
@@ -347,6 +363,11 @@ func (m *Model) consumeSSE(ctx context.Context, body io.ReadCloser, chunks chan<
 
 	reason := mapFinishReason(finish, len(calls) > 0)
 	message := agent.Message{Role: agent.RoleAssistant, FinishReason: reason}
+	// Reasoning comes first so a stored message reads in the order it was
+	// produced. It is never projected back into a request; see projectChatRequest.
+	if reasoning.Len() > 0 {
+		message.Parts = append(message.Parts, agent.ContentPart{Type: agent.PartReasoning, Text: reasoning.String()})
+	}
 	if text.Len() > 0 {
 		message.Parts = append(message.Parts, agent.ContentPart{Type: agent.PartText, Text: text.String()})
 	}
@@ -397,15 +418,42 @@ func mapFinishReason(finish string, hasToolCalls bool) agent.FinishReason {
 // --- wire protocol ---
 
 type chatRequest struct {
-	Model         string         `json:"model"`
-	Messages      []chatMessage  `json:"messages"`
-	Tools         []chatTool     `json:"tools,omitempty"`
-	ToolChoice    any            `json:"tool_choice,omitempty"`
-	Temperature   *float64       `json:"temperature,omitempty"`
-	MaxTokens     *int           `json:"max_tokens,omitempty"`
-	TopP          *float64       `json:"top_p,omitempty"`
-	Stream        bool           `json:"stream,omitempty"`
-	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+	Model          string              `json:"model"`
+	Messages       []chatMessage       `json:"messages"`
+	Tools          []chatTool          `json:"tools,omitempty"`
+	ToolChoice     any                 `json:"tool_choice,omitempty"`
+	Temperature    *float64            `json:"temperature,omitempty"`
+	MaxTokens      *int                `json:"max_tokens,omitempty"`
+	TopP           *float64            `json:"top_p,omitempty"`
+	Stream         bool                `json:"stream,omitempty"`
+	StreamOptions  *streamOptions      `json:"stream_options,omitempty"`
+	ResponseFormat *chatResponseFormat `json:"response_format,omitempty"`
+}
+
+// chatResponseFormat is the OpenAI projection of agent.ResponseFormat.
+type chatResponseFormat struct {
+	Type       string          `json:"type"`
+	JSONSchema *chatJSONSchema `json:"json_schema,omitempty"`
+}
+
+type chatJSONSchema struct {
+	Name   string          `json:"name"`
+	Schema json.RawMessage `json:"schema"`
+	Strict bool            `json:"strict,omitempty"`
+}
+
+// projectResponseFormat maps the portable constraint onto the wire field.
+// A nil format leaves the field absent, which is ordinary free-form generation.
+func projectResponseFormat(format *agent.ResponseFormat) *chatResponseFormat {
+	if format == nil {
+		return nil
+	}
+	if format.Kind == agent.ResponseFormatJSONSchema {
+		return &chatResponseFormat{Type: "json_schema", JSONSchema: &chatJSONSchema{
+			Name: format.Name, Schema: format.Schema, Strict: format.Strict,
+		}}
+	}
+	return &chatResponseFormat{Type: "json_object"}
 }
 
 type streamOptions struct {
@@ -418,6 +466,11 @@ type chatMessage struct {
 	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	Name       string         `json:"name,omitempty"`
+	// ReasoningContent and Reasoning are read from non-streaming responses and
+	// never written: sending a model its own reasoning back is rejected by the
+	// providers that produce it.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+	Reasoning        string `json:"reasoning,omitempty"`
 }
 
 type chatTool struct {
@@ -470,8 +523,12 @@ type wireStreamChunk struct {
 	Model   string `json:"model"`
 	Choices []struct {
 		Delta struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
+			Content string `json:"content"`
+			// Reasoning content is not in the OpenAI spec; DeepSeek, Qwen, and
+			// several gateways emit it under one of these two names.
+			ReasoningContent string `json:"reasoning_content"`
+			Reasoning        string `json:"reasoning"`
+			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Function struct {
@@ -487,7 +544,8 @@ type wireStreamChunk struct {
 }
 
 func projectChatRequest(request *agent.GenerateRequest) (chatRequest, error) {
-	wire := chatRequest{Model: request.Model, Temperature: request.Temperature, MaxTokens: request.MaxTokens, TopP: request.TopP}
+	wire := chatRequest{Model: request.Model, Temperature: request.Temperature, MaxTokens: request.MaxTokens, TopP: request.TopP,
+		ResponseFormat: projectResponseFormat(request.ResponseFormat)}
 	for _, message := range request.Messages {
 		if message.Role == agent.RoleTool {
 			for _, result := range message.ToolResults() {
@@ -500,6 +558,9 @@ func projectChatRequest(request *agent.GenerateRequest) (chatRequest, error) {
 				return chatRequest{}, agent.NewModelError(agent.ModelErrorKindUnsupported, false, 0, 0, "image input is not supported by the openaicompat adapter", nil)
 			}
 		}
+		// Message.Text() excludes reasoning parts, which is deliberate: providers
+		// reject their own reasoning as assistant input, and replaying a chain of
+		// thought as conversation would change the question being answered.
 		projected := chatMessage{Role: string(message.Role), Content: message.Text()}
 		for _, call := range message.ToolCalls() {
 			projected.ToolCalls = append(projected.ToolCalls, chatToolCall{ID: call.ID, Type: "function", Function: chatFunction{Name: call.Name, Arguments: call.Input}})
@@ -531,6 +592,9 @@ func projectChatResponse(response chatResponse) (*agent.Response, error) {
 	}
 	choice := response.Choices[0]
 	message := agent.Message{Role: agent.RoleAssistant}
+	if delta := deltaReasoning(choice.Message.ReasoningContent, choice.Message.Reasoning); delta != "" {
+		message.Parts = append(message.Parts, agent.ContentPart{Type: agent.PartReasoning, Text: delta})
+	}
 	if choice.Message.Content != "" {
 		message.Parts = append(message.Parts, agent.ContentPart{Type: agent.PartText, Text: choice.Message.Content})
 	}
@@ -572,4 +636,16 @@ func normalizeUsage(wire *wireUsage) agent.Usage {
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens + usage.CacheCreationTokens + usage.CacheReadTokens
 	}
 	return usage
+}
+
+// deltaReasoning picks whichever field this provider uses for reasoning.
+//
+// The name is not standardized: DeepSeek sends reasoning_content, several
+// gateways send reasoning, and OpenAI sends neither. Preferring the more
+// specific name keeps a provider that sends both from being double-counted.
+func deltaReasoning(reasoningContent, reasoning string) string {
+	if reasoningContent != "" {
+		return reasoningContent
+	}
+	return reasoning
 }

@@ -10,6 +10,23 @@ While the project is at `v0.x`, minor versions may contain breaking changes.
 
 ### Added
 
+- Structured output. `agent.ResponseFormat` (`ResponseFormatJSON` /
+  `ResponseFormatJSONSchema`) on `Config` and `RunRequest`, projected into
+  `GenerateRequest.ResponseFormat` and validated against
+  `Capabilities.StructuredOutput` at assembly. An agent whose answer is consumed
+  by code rather than read by a person - extraction, classification, routing -
+  could not previously say so: the capability flag existed but nothing could
+  request it. `providers/openaicompat` projects it onto `response_format` and now
+  declares the capability. The format is part of `ImmutableRunConfig`, so a
+  durable run cannot resume under a different output shape.
+- Reasoning. `agent.PartReasoning`, `agent.ChunkReasoning`,
+  `(agent.Message).Reasoning`, and `agent.ObservationReasoningDelta`. A model's
+  thinking previously had nowhere to go, so adapters had to drop it or smuggle
+  it into the answer. It is kept out of `Message.Text()` and out of the request
+  an adapter sends upstream - providers that emit reasoning reject it as
+  assistant input - and a model that produces it must declare
+  `Capabilities.Reasoning`, which was until now a flag nothing read.
+  `providers/openaicompat` reads both `reasoning_content` and `reasoning`.
 - `agent.StreamResponse`: turns one complete response into the chunk stream the
   runtime expects. The runtime requires an adapter's chunks to add up to exactly
   the terminal response, which the obvious minimal adapter violates by emitting
@@ -99,6 +116,12 @@ While the project is at `v0.x`, minor versions may contain breaking changes.
   running. `Complete` must clear the stored handle. `tool.MemoryLedger` and the
   `demo/icoder` SQLite adapter show the shape, and
   `agenttest.TestToolExecutionLedger` verifies it.
+
+### Removed
+
+- `collectStream`, an unexported stream consumer that nothing called. The live
+  consumer is `streamStep`; keeping a second near-identical copy meant a rule
+  added to one could silently miss the other.
 
 ### Fixed
 

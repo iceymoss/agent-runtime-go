@@ -87,6 +87,7 @@ type ImmutableRunConfig struct {
 	ToolRepairLimit     int               `json:"tool_repair_limit,omitempty"`
 	Generation          GenerationOptions `json:"generation"`
 	ToolChoice          *ToolChoice       `json:"tool_choice,omitempty"`
+	ResponseFormat      *ResponseFormat   `json:"response_format,omitempty"`
 	Tools               []ToolDefinition  `json:"tools,omitempty"`
 	PromptVersion       string            `json:"prompt_version,omitempty"`
 	PolicyVersion       string            `json:"policy_version,omitempty"`
