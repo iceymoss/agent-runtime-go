@@ -10,6 +10,15 @@ While the project is at `v0.x`, minor versions may contain breaking changes.
 
 ### Added
 
+- `providers/retry`: wraps any `agent.Model` so transient upstream failures are
+  retried. The obvious implementation - wrapping what `Stream()` returns -
+  retries almost nothing, because an SSE request usually succeeds and then fails
+  partway through, which reaches the caller as an `agent.ChunkError` inside the
+  stream. This retries both, honors the provider's `Retry-After`, preserves the
+  optional `agent.Generator` capability, and deliberately refuses to retry once a
+  chunk has been delivered downstream, where a second attempt would duplicate
+  content the runtime already accumulated. `demo/icoder` replaced its own
+  wrapper, which had exactly the gap described above.
 - Structured output. `agent.ResponseFormat` (`ResponseFormatJSON` /
   `ResponseFormatJSONSchema`) on `Config` and `RunRequest`, projected into
   `GenerateRequest.ResponseFormat` and validated against
@@ -119,6 +128,9 @@ While the project is at `v0.x`, minor versions may contain breaking changes.
 
 ### Removed
 
+- **BREAKING** `agent.Capabilities.Media`. Nothing in the library read it, and
+  what it would have meant is already covered by `ImageInput`, which is checked.
+  **Migration:** delete the field from adapter capability literals.
 - `collectStream`, an unexported stream consumer that nothing called. The live
   consumer is `streamStep`; keeping a second near-identical copy meant a rule
   added to one could silently miss the other.

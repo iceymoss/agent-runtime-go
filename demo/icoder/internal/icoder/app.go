@@ -16,6 +16,7 @@ import (
 	"github.com/iceymoss/agent-runtime-go/prompt"
 	"github.com/iceymoss/agent-runtime-go/provider"
 	"github.com/iceymoss/agent-runtime-go/providers/openaicompat"
+	"github.com/iceymoss/agent-runtime-go/providers/retry"
 	"github.com/iceymoss/agent-runtime-go/skills"
 	"github.com/iceymoss/agent-runtime-go/subagent"
 )
@@ -126,7 +127,10 @@ func NewApp(ctx context.Context, config Config) (app *App, resultErr error) {
 		}
 	}()
 
-	model := newRetryModel(openaicompat.New(config.BaseURL, config.APIKey))
+	// The library's wrapper retries a stream that fails after the HTTP call
+	// succeeded, which is how SSE actually fails and which iCoder's own earlier
+	// wrapper missed entirely.
+	model := retry.New(openaicompat.New(config.BaseURL, config.APIKey), retry.Options{})
 	if _, err := buildProviderCatalog(config, model.Capabilities()); err != nil {
 		return nil, err
 	}

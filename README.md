@@ -253,6 +253,7 @@ Import only what your current requirements need.
 |---|---|
 | One model/tool loop | root package `agent` |
 | OpenAI-compatible model integration | `providers/openaicompat` |
+| Retrying transient provider failures | `providers/retry` |
 | Multi-model catalog and factory | `provider` |
 | Prompt templates and versions | `prompt` |
 | History normalization and token budgets | `context` |

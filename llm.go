@@ -32,7 +32,6 @@ type Capabilities struct {
 	ToolChoiceRequired bool `json:"tool_choice_required"`
 	ToolChoiceNamed    bool `json:"tool_choice_named"`
 	StructuredOutput   bool `json:"structured_output"`
-	Media              bool `json:"media"`
 	ImageInput         bool `json:"image_input,omitempty"`
 	Reasoning          bool `json:"reasoning"`
 	UsageDetails       bool `json:"usage_details"`

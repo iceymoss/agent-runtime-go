@@ -253,6 +253,7 @@ agent-runtime-go
 |---|---|
 | 一次 model/tool loop | 根包 `agent` |
 | OpenAI 兼容模型接入 | `providers/openaicompat` |
+| 重试瞬时的供应商故障 | `providers/retry` |
 | 多模型目录与 factory | `provider` |
 | Prompt 模板与版本 | `prompt` |
 | 历史归一化与 token 预算 | `context` |
