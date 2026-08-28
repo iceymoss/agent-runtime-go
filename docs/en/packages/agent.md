@@ -26,6 +26,22 @@ type Tool interface {
 }
 ```
 
+Writing a `Model` adapter has one rule that is easy to trip over: **the streamed chunks must add up to exactly the terminal response** — concatenated text deltas must equal the final message byte for byte, and tool calls must match too. The runtime will not hide an adapter that streams one answer and then reports another.
+
+The catch is that the most natural minimal implementation — emit only the terminal chunk, no deltas — violates it. So an adapter that already holds the whole answer should use `agent.StreamResponse`:
+
+```go
+func (m myModel) Stream(ctx context.Context, req *agent.GenerateRequest) (<-chan agent.StreamChunk, error) {
+	response, err := m.callUpstream(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return agent.StreamResponse(response), nil
+}
+```
+
+Non-streaming endpoints, cached replies, and test fakes all fall into that category. An adapter that genuinely streams token by token emits its own deltas and finishes with one `ChunkFinish`.
+
 The executor is `Agent`: assemble once with `agent.New(config, model, registry)`, then call `Run` concurrently and repeatedly. `Agent` itself does not keep session history, read environment variables, or connect to databases—those belong to your application.
 
 Around these two ports, the root package includes everything the loop needs: JSON Schema validation, tool allowlists, max steps, stop conditions, context budget, loop detection, and feeding invalid args back for repair (tool repair).
@@ -134,19 +150,36 @@ Tool errors come in two kinds with different semantics:
 
 ### Observe run progress
 
-`ObservationEmitter` exposes text deltas, tool start/end, and step completion for live UI:
+`ObservationEmitter` exposes text deltas, tool start/end, and step completion for live UI.
+
+**The default is bounded, non-blocking, and lossy**: an observation that finds the queue full is dropped and counted, so delivery can never hold up model or tool progress. That is the right trade for progress telemetry and the wrong one for text a person is reading — any consumer slower than the model (SSE, WebSockets, and slow clients all qualify) loses deltas silently, and the reader sees a truncated answer while `RunResult.Text` stays complete.
+
+So distinguish the two uses:
 
 ```go
-emitter := agent.NewObservationEmitter(64, func(o agent.Observation) {
-	if o.Type == agent.ObservationTextDelta {
-		fmt.Print(o.Text)
-	}
-})
+// Telemetry: losing some is fine, but the loss must be detectable.
+emitter := agent.NewObservationEmitter(64, recordProgress)
+defer emitter.Close()
+// ... after the run
+if emitter.Dropped() > 0 { /* the observations are incomplete */ }
+```
+
+```go
+// Text delivered to a reader: nothing may be lost.
+emitter := agent.NewObservationEmitterWith(
+	agent.ObservationOptions{QueueSize: 64, Lossless: true},
+	func(o agent.Observation) {
+		if o.Type == agent.ObservationTextDelta {
+			fmt.Print(o.Text)
+		}
+	})
 defer emitter.Close()
 result, err := runner.Run(ctx, agent.RunRequest{Messages: msgs, ObservationEmitter: emitter})
 ```
 
-It is a bounded, non-blocking, droppable progress signal—authoritative results come from `RunResult` only. For reliable event delivery use the [event subpackage](event.md).
+`Lossless` has a real cost: a consumer slower than the model now slows the run, so keep `consume` cheap (hand the observation to a buffered writer; do not perform the network write inline). Waiting is bounded by the run's context, so a cancelled run never blocks on a consumer that stopped reading.
+
+In either mode authoritative results come from `RunResult` only — `Observation` is not an event log. For reliable event delivery use the [event subpackage](event.md).
 
 ## FAQ
 

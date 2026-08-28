@@ -26,6 +26,22 @@ type Tool interface {
 }
 ```
 
+写 `Model` 适配器时有一条容易踩的规则：**流式分片累加后必须严格等于终态 response**——文本增量拼起来要逐字等于最终消息，工具调用也要一致。运行时不会掩盖"流出来一个答案、终态却报另一个"的适配器 bug。
+
+问题在于最自然的最小实现（只发一个终态 chunk、不发任何增量）恰好违反它。所以已经拿到完整回答的适配器直接用 `agent.StreamResponse`：
+
+```go
+func (m myModel) Stream(ctx context.Context, req *agent.GenerateRequest) (<-chan agent.StreamChunk, error) {
+	response, err := m.callUpstream(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return agent.StreamResponse(response), nil
+}
+```
+
+非流式端点、缓存回复、测试 fake 都属于这一类。真正逐 token 流式的适配器自己发增量，最后用一个 `ChunkFinish` 收尾即可。
+
 执行器是 `Agent`：用 `agent.New(config, model, registry)` 装配一次，之后并发安全地反复调用 `Run`。`Agent` 自身不保存会话历史、不读环境变量、不连数据库——这些都属于你的应用。
 
 围绕这两个端口，根包内置了循环执行所需的全部机制：JSON Schema 校验、工具白名单、最大步数、停止条件、上下文预算、循环检测、非法参数回灌修正（tool repair）。
@@ -134,19 +150,36 @@ tool := agent.MustNewTool("find_order", "按订单号查询订单", handler)
 
 ### 观察运行进度
 
-`ObservationEmitter` 提供文本增量、工具开始/结束、步骤完成四类信号，用于 UI 实时展示：
+`ObservationEmitter` 提供文本增量、工具开始/结束、步骤完成四类信号，用于 UI 实时展示。
+
+**默认是有界、非阻塞、可丢失的**：队列满时观察值被丢弃并计数，绝不阻塞模型和工具的推进。这对进度遥测是对的取舍，对"人正在读的文本"是错的——消费者只要比模型慢（SSE、WebSocket、慢客户端都会），增量就会被静默丢掉，读者看到一个被截断的回答，而 `RunResult.Text` 是完整的。
+
+所以要区分两种用途：
 
 ```go
-emitter := agent.NewObservationEmitter(64, func(o agent.Observation) {
-	if o.Type == agent.ObservationTextDelta {
-		fmt.Print(o.Text)
-	}
-})
+// 遥测：丢一点无所谓，但要能发现丢了
+emitter := agent.NewObservationEmitter(64, recordProgress)
+defer emitter.Close()
+// ... 运行之后
+if emitter.Dropped() > 0 { /* 观察值不完整 */ }
+```
+
+```go
+// 交付给人看的文本：不能丢
+emitter := agent.NewObservationEmitterWith(
+	agent.ObservationOptions{QueueSize: 64, Lossless: true},
+	func(o agent.Observation) {
+		if o.Type == agent.ObservationTextDelta {
+			fmt.Print(o.Text)
+		}
+	})
 defer emitter.Close()
 result, err := runner.Run(ctx, agent.RunRequest{Messages: msgs, ObservationEmitter: emitter})
 ```
 
-注意它是有界、非阻塞、可丢失的进度信号——权威结果只看 `RunResult`。需要可靠的事件投递用 [event 子包](event.md)。
+`Lossless` 的代价是真实的：比模型慢的消费者会拖慢这次运行，所以 `consume` 要保持廉价（把观察值交给带缓冲的 writer，不要在里面直接做网络写）。等待受本次运行的 context 约束，运行被取消时不会卡在停止读取的消费者上。
+
+无论哪种模式，权威结果只看 `RunResult`——`Observation` 不是事件日志。需要可靠的事件投递用 [event 子包](event.md)。
 
 ## 常见问题
 

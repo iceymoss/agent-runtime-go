@@ -10,6 +10,24 @@ While the project is at `v0.x`, minor versions may contain breaking changes.
 
 ### Added
 
+- `agent.StreamResponse`: turns one complete response into the chunk stream the
+  runtime expects. The runtime requires an adapter's chunks to add up to exactly
+  the terminal response, which the obvious minimal adapter violates by emitting
+  only the terminal chunk - and the resulting protocol error did not say what to
+  do about it. Adapters holding a whole response (non-streaming endpoints,
+  cached replies, test fakes) now call this instead of assembling chunks by
+  hand; `providers/openaicompat` was rewritten on top of it, and the protocol
+  error now names it.
+- `agent.ObservationOptions`, `agent.NewObservationEmitterWith`, and
+  `(*agent.ObservationEmitter).Dropped`. The emitter's bounded, non-blocking
+  delivery is correct for telemetry and wrong for text a person is reading: any
+  consumer slower than the model - which is every SSE or WebSocket UI - lost
+  deltas silently, so the reader saw a truncated answer while `RunResult.Text`
+  stayed complete. `Dropped` makes that loss detectable, and
+  `ObservationOptions.Lossless` makes enqueueing wait for room instead, bounded
+  by the run's context so a cancelled run is never held up by a stalled
+  consumer. `NewObservationEmitter` keeps its existing lossy behavior.
+
 - `durable.CheckpointAdapter` (`durable.NewCheckpointAdapter`): the official
   bridge that exposes a `durable.Store` plus its `ExecutionLedger` through the
   root `agent.CheckpointStore` port, so `Agent.Run` can execute durably against

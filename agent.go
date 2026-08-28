@@ -333,7 +333,7 @@ func (a *Agent) Run(ctx context.Context, request RunRequest) (result *RunResult,
 			result.Steps = append(result.Steps, stepResult)
 			result.StopReason = StopReasonComplete
 			result.Outcome = OutcomeCompleted
-			observer.emit(Observation{Type: ObservationStepFinished, Step: &stepResult})
+			observer.emit(ctx, Observation{Type: ObservationStepFinished, Step: &stepResult})
 			return result, nil
 		}
 		if resp.FinishReason == FinishLength {
@@ -341,7 +341,7 @@ func (a *Agent) Run(ctx context.Context, request RunRequest) (result *RunResult,
 			result.Steps = append(result.Steps, stepResult)
 			result.StopReason = StopReasonOutputLimit
 			result.Outcome = OutcomeSuspended
-			observer.emit(Observation{Type: ObservationStepFinished, Step: &stepResult})
+			observer.emit(ctx, Observation{Type: ObservationStepFinished, Step: &stepResult})
 			return result, nil
 		}
 
@@ -354,7 +354,7 @@ func (a *Agent) Run(ctx context.Context, request RunRequest) (result *RunResult,
 			result.StopReason = StopReasonToolSuspended
 			result.Outcome = OutcomeSuspended
 			result.Suspension = &RunSuspension{Reason: StopReasonToolSuspended, Tool: &suspension}
-			observer.emit(Observation{Type: ObservationStepFinished, Step: &stepResult})
+			observer.emit(ctx, Observation{Type: ObservationStepFinished, Step: &stepResult})
 			return result, nil
 		}
 
@@ -364,7 +364,7 @@ func (a *Agent) Run(ctx context.Context, request RunRequest) (result *RunResult,
 		result.Text = resp.Message.Text()
 		result.Steps = append(result.Steps, stepResult)
 
-		observer.emit(Observation{Type: ObservationStepFinished, Step: &stepResult})
+		observer.emit(ctx, Observation{Type: ObservationStepFinished, Step: &stepResult})
 
 		if err != nil {
 			return result, err
@@ -544,7 +544,7 @@ func (a *Agent) runDurable(ctx context.Context, request RunRequest) (result *Run
 		*result = *resultFromCheckpoint(cp, responseModelName(resp, a.cfg.ModelName))
 		result.DurableFence = snapshot.FenceToken
 		if resp.FinishReason == FinishStop || resp.FinishReason == FinishLength {
-			observer.emit(Observation{Type: ObservationStepFinished, Step: &step})
+			observer.emit(ctx, Observation{Type: ObservationStepFinished, Step: &step})
 			break
 		}
 	}
@@ -665,7 +665,7 @@ func (a *Agent) resumeDurableTools(ctx context.Context, request RunRequest, snap
 		if execution.Status == ToolExecutionCompleted && execution.Result != nil {
 			result = *execution.Result
 		} else {
-			observer.emit(Observation{Type: ObservationToolCall, ToolCall: &call})
+			observer.emit(ctx, Observation{Type: ObservationToolCall, ToolCall: &call})
 			var callResume *ToolSuspension
 			if resume != nil && resume.StepNumber == uint32(step.StepNumber) && resume.Ordinal == uint32(i) {
 				callResume = resume
@@ -681,7 +681,7 @@ func (a *Agent) resumeDurableTools(ctx context.Context, request RunRequest, snap
 				checkpoint.Outcome.StopReason = StopReasonToolSuspended
 				checkpoint.Outcome.Outcome = OutcomeSuspended
 				checkpoint.Outcome.Suspension = &RunSuspension{Reason: StopReasonToolSuspended, Tool: &suspension}
-				observer.emit(Observation{Type: ObservationStepFinished, Step: &step})
+				observer.emit(ctx, Observation{Type: ObservationStepFinished, Step: &step})
 				return snapshot, checkpoint, nil
 			}
 			if err != nil {
@@ -717,12 +717,12 @@ func (a *Agent) resumeDurableTools(ctx context.Context, request RunRequest, snap
 		if err != nil {
 			return snapshot, checkpoint, err
 		}
-		observer.emit(Observation{Type: ObservationToolResult, ToolResult: &result})
+		observer.emit(ctx, Observation{Type: ObservationToolResult, ToolResult: &result})
 		if checkpoint.RepairCount > a.cfg.ToolRepairLimit {
 			return snapshot, checkpoint, fmt.Errorf("%w: repair budget %d exhausted", ErrToolInputInvalid, a.cfg.ToolRepairLimit)
 		}
 	}
-	observer.emit(Observation{Type: ObservationStepFinished, Step: &step})
+	observer.emit(ctx, Observation{Type: ObservationStepFinished, Step: &step})
 	if stopTurn {
 		return snapshot, checkpoint, nil
 	}
@@ -857,7 +857,7 @@ func (a *Agent) streamStep(ctx context.Context, next stepRequest, observer *obse
 		switch chunk.Type {
 		case ChunkText:
 			text.WriteString(chunk.TextDelta)
-			observer.emit(Observation{Type: ObservationTextDelta, Text: chunk.TextDelta})
+			observer.emit(ctx, Observation{Type: ObservationTextDelta, Text: chunk.TextDelta})
 		case ChunkToolCall:
 			if chunk.ToolCall != nil {
 				calls = append(calls, *chunk.ToolCall)
@@ -890,7 +890,7 @@ func (a *Agent) streamStep(ctx context.Context, next stepRequest, observer *obse
 		return nil, newProtocolError("tool choice violation", err)
 	}
 	if text.String() != resp.Message.Text() || !reflect.DeepEqual(calls, resp.ToolCalls()) {
-		return nil, newProtocolError("streamed chunks do not match terminal response", nil)
+		return nil, newProtocolError("streamed chunks do not match terminal response: every text delta and tool call must add up to the terminal response; adapters holding a complete response should return agent.StreamResponse(response)", nil)
 	}
 	if err := resp.Usage.Validate(); err != nil {
 		return nil, newProtocolError("invalid usage", err)
@@ -918,7 +918,7 @@ func (a *Agent) execTools(ctx context.Context, toolSet *ToolSet, calls []ToolCal
 
 	for i := range calls {
 		call := calls[i]
-		observer.emit(Observation{Type: ObservationToolCall, ToolCall: &call})
+		observer.emit(ctx, Observation{Type: ObservationToolCall, ToolCall: &call})
 
 		res, invalid, err := a.execOne(ctx, toolSet, call, "")
 		if err != nil {
@@ -932,7 +932,7 @@ func (a *Agent) execTools(ctx context.Context, toolSet *ToolSet, calls []ToolCal
 		}
 		results = append(results, res)
 
-		observer.emit(Observation{Type: ObservationToolResult, ToolResult: &res})
+		observer.emit(ctx, Observation{Type: ObservationToolResult, ToolResult: &res})
 		if priorInvalid+invalidCount > a.cfg.ToolRepairLimit {
 			return results, stopTurn, invalidCount, fmt.Errorf("%w: repair budget %d exhausted", ErrToolInputInvalid, a.cfg.ToolRepairLimit)
 		}

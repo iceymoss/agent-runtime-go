@@ -137,7 +137,7 @@ func (m *Model) Stream(ctx context.Context, request *agent.GenerateRequest) (<-c
 		if err != nil {
 			return nil, err
 		}
-		return synthesizeChunks(response), nil
+		return agent.StreamResponse(response), nil
 	}
 	wire, err := projectChatRequest(request)
 	if err != nil {
@@ -157,7 +157,7 @@ func (m *Model) Stream(ctx context.Context, request *agent.GenerateRequest) (<-c
 		if err != nil {
 			return nil, err
 		}
-		return synthesizeChunks(response), nil
+		return agent.StreamResponse(response), nil
 	}
 	if contentType != "" && !strings.HasPrefix(contentType, "text/event-stream") {
 		httpResponse.Body.Close()
@@ -392,22 +392,6 @@ func mapFinishReason(finish string, hasToolCalls bool) agent.FinishReason {
 	default:
 		return agent.FinishStop
 	}
-}
-
-func synthesizeChunks(response *agent.Response) <-chan agent.StreamChunk {
-	chunks := make(chan agent.StreamChunk, len(response.Message.Parts)+1)
-	for _, part := range response.Message.Parts {
-		switch part.Type {
-		case agent.PartText:
-			chunks <- agent.StreamChunk{Type: agent.ChunkText, TextDelta: part.Text}
-		case agent.PartToolCall:
-			call := *part.ToolCall
-			chunks <- agent.StreamChunk{Type: agent.ChunkToolCall, ToolCall: &call}
-		}
-	}
-	chunks <- agent.StreamChunk{Type: agent.ChunkFinish, Response: response}
-	close(chunks)
-	return chunks
 }
 
 // --- wire protocol ---

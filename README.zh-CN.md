@@ -22,6 +22,7 @@
 - 统一的消息、图片、模型、流式响应和 usage 契约
 - 多步 model/tool loop、JSON Schema 校验和工具白名单
 - 最大步数、停止条件、上下文预算和工具循环检测
+- 默认有界可丢的进度观察，面向读者的流式文本可切换为无损模式
 - 可选的 Session、Durable、Permission、Event、MCP、Skills 与 Sub-Agent
 - 不可变 runtime definition 和可复现 artifact digest
 - 可测试的 provider/tool ports，不绑定 OpenAI、Anthropic 或具体数据库
@@ -83,7 +84,21 @@ type Model interface {
 }
 ```
 
-供应商 adapter 将 `GenerateRequest` 转为上游协议，再把上游响应转换成 canonical `StreamChunk`。完整最小实现见 [`examples/hello`](examples/hello/main.go)。
+供应商 adapter 将 `GenerateRequest` 转为上游协议，再把上游响应转换成 canonical `StreamChunk`。
+
+运行时要求流式分片累加后必须严格等于终态 response，所以已经拿到完整回答的 adapter——非流式端点、缓存回复、测试 fake——应当直接返回 `agent.StreamResponse(response)`，不要手工拼分片：
+
+```go
+func (m myModel) Stream(ctx context.Context, req *agent.GenerateRequest) (<-chan agent.StreamChunk, error) {
+	response, err := m.callUpstream(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return agent.StreamResponse(response), nil
+}
+```
+
+真正流式的 adapter 自己发增量，最后用一个 `ChunkFinish` 收尾，其 response 必须与已发出的增量一致。完整最小实现见 [`examples/hello`](examples/hello/main.go)。
 
 ## 接入真实模型
 

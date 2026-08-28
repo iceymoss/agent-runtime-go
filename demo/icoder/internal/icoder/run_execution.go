@@ -99,7 +99,11 @@ func (a *App) executeAttempt(ctx context.Context, invocation runInvocation) (*ag
 	}); err != nil {
 		return nil, err
 	}
-	emitter := agent.NewObservationEmitter(64, invocation.observe)
+	// Lossless: these observations are the answer a person is watching appear,
+	// not telemetry. The lossy default drops deltas whenever the terminal or the
+	// TUI falls behind the model, which would truncate what the user reads while
+	// the committed transcript stayed complete.
+	emitter := agent.NewObservationEmitterWith(agent.ObservationOptions{QueueSize: 64, Lossless: true}, invocation.observe)
 	result, runErr := a.runner.Run(ctx, agent.RunRequest{
 		Messages:           invocation.messages,
 		ObservationEmitter: emitter,
