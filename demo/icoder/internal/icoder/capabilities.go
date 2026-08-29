@@ -7,13 +7,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"sync"
 	"time"
 
 	"github.com/iceymoss/agent-runtime-go"
 	"github.com/iceymoss/agent-runtime-go/mcp"
 	"github.com/iceymoss/agent-runtime-go/permission"
-	"github.com/iceymoss/agent-runtime-go/subagent"
 )
 
 type staticMCPConfig struct{ endpoint string }
@@ -53,7 +51,13 @@ func (t *mcpAgentTool) Execute(ctx context.Context, invocation agent.ToolInvocat
 	return agent.ToolResult{Content: data, IsError: result.IsError}, nil
 }
 
-func registerMCP(ctx context.Context, registry *agent.Registry, endpoint string, permissions permission.Service, sessionID func() string) (mcp.Manager, []string, error) {
+// mcpToolEntries connects to the configured MCP endpoint and maps every remote
+// tool into the same lifecycle the local tools use.
+//
+// A remote tool's behavior is defined by someone else, so it is classified as an
+// external effect with no idempotency and never replayed. That is what makes an
+// unclassified remote tool ask for approval instead of running by default.
+func mcpToolEntries(ctx context.Context, endpoint string) (mcp.Manager, []lifecycleEntry, error) {
 	if endpoint == "" {
 		return nil, nil, nil
 	}
@@ -82,116 +86,18 @@ func registerMCP(ctx context.Context, registry *agent.Registry, endpoint string,
 	if !ok {
 		return nil, nil, fmt.Errorf("MCP manager produced no snapshot")
 	}
-	var names []string
+	var entries []lifecycleEntry
 	for _, server := range snapshot.Servers {
 		for _, definition := range server.Tools {
 			tool := &mcpAgentTool{manager: manager, scope: scope, generation: snapshot.Generation, serverID: server.ID, definition: definition.AgentDefinition(), upstream: definition.Name}
-			wrapped := &authorizedTool{tool: tool, permission: permissions, action: "network.tool", sessionID: sessionID, resource: func(string) permission.Resource {
-				return permission.Resource{Kind: "mcp-tool", Key: string(server.ID) + "/" + definition.Name}
-			}}
-			if err := registry.Register(wrapped); err != nil {
-				return nil, nil, err
-			}
-			names = append(names, definition.Canonical)
+			entries = append(entries, lifecycleEntry{
+				tool:     tool,
+				metadata: externalMetadata("network.tool", "mcp."+string(server.ID), false),
+				resource: permission.Resource{Kind: "mcp-tool", Key: string(server.ID) + "/" + definition.Name},
+			})
 		}
 	}
-	return manager, names, nil
-}
-
-type reviewRunner struct {
-	agent   *agent.Agent
-	mu      sync.RWMutex
-	results map[subagent.ResultRef]string
-}
-
-func (r *reviewRunner) Run(ctx context.Context, request subagent.RunRequest) (subagent.RunResult, error) {
-	result, err := r.agent.Run(ctx, agent.RunRequest{Messages: []agent.Message{
-		agent.NewSystemMessage("You are an independent read-only code reviewer. Inspect relevant files and git changes before reporting findings. Prioritize correctness, security, regressions, and missing tests. Return findings with file and line references; state explicitly when no findings are found."),
-		agent.NewUserMessage(string(request.Input)),
-	}})
-	if err != nil {
-		return subagent.RunResult{}, err
-	}
-	ref := subagent.ResultRef("review:" + digest(request.Input)[7:23])
-	r.mu.Lock()
-	r.results[ref] = result.Text
-	r.mu.Unlock()
-	return subagent.RunResult{State: subagent.ChildCompleted, ResultRef: ref, UsageFactKey: subagent.UsageFactKey(ref), Usage: subagent.Usage{InputTokens: int64(result.Usage.PromptTokens), OutputTokens: int64(result.Usage.CompletionTokens)}}, nil
-}
-
-func (r *reviewRunner) Result(ref subagent.ResultRef) (string, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	value, ok := r.results[ref]
-	return value, ok
-}
-
-type wakeRecorder struct{}
-
-func (wakeRecorder) Wake(_ context.Context, request subagent.WakeRequest) error {
-	return nil
-}
-
-type delegateReviewTool struct {
-	service   *subagent.Service
-	runner    *reviewRunner
-	sessionID func() string
-}
-
-func (t *delegateReviewTool) Definition() agent.ToolDefinition {
-	return agent.ToolDefinition{Name: "delegate_review", Description: "Delegate a focused code review to an independent child run.", Strict: true, Parameters: map[string]any{"type": "object", "properties": map[string]any{"task": map[string]any{"type": "string"}}, "required": []any{"task"}}}
-}
-func (*delegateReviewTool) ReplayPolicy() agent.ReplayPolicy { return agent.ReplayPolicyIdempotent }
-func (t *delegateReviewTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
-	var input struct {
-		Task string `json:"task"`
-	}
-	if err := json.Unmarshal([]byte(invocation.RawInput), &input); err != nil {
-		return agent.ToolResult{}, err
-	}
-	limits := subagent.Limits{MaxDepth: 2, MaxFanout: 2, MaxInputTokens: 4096, MaxOutputTokens: 1024, MaxCostMicros: 1_000_000, MaxToolCalls: 10, MaxRuntime: time.Minute}
-	reserve := subagent.Reservation{InputTokens: 4096, OutputTokens: 1024, CostMicros: 1_000_000, ToolCalls: 10, Runtime: time.Minute}
-	sessionID := t.sessionID()
-	receipt, err := t.service.Spawn(ctx, subagent.SpawnRequest{RequestKey: subagent.RequestKey(invocation.CallID), Parent: subagent.ParentRef{TenantKey: "local", SessionKey: subagent.SessionKey(sessionID), RunKey: subagent.RunKey(sessionID)}, AgentKey: "icoder.reviewer", Input: []byte(input.Task), Limits: limits, Reserve: reserve})
-	if err != nil {
-		return agent.ToolResult{}, err
-	}
-	snapshot, claimed, err := t.service.RunNext(ctx, "local")
-	if err != nil {
-		return agent.ToolResult{}, err
-	}
-	if !claimed {
-		return agent.ToolResult{Content: "child accepted but not claimed", IsError: true}, nil
-	}
-	if _, err := t.service.Reconcile(ctx, subagent.ReconcileRequest{TenantKey: "local", Limit: 10}); err != nil {
-		return agent.ToolResult{}, err
-	}
-	review, ok := t.runner.Result(snapshot.ResultRef)
-	if !ok {
-		return agent.ToolResult{Content: "child completed without a readable result", IsError: true}, nil
-	}
-	data, err := marshalString(map[string]any{"child": receipt.Child.RunKey, "state": snapshot.State, "result_ref": snapshot.ResultRef, "review": review})
-	return agent.ToolResult{Content: data}, err
-}
-
-func registerSubagent(registry *agent.Registry, model agent.Model, modelName string, workspace *Workspace, sessionID func() string) error {
-	reviewRegistry := agent.NewRegistry()
-	for _, tool := range []agent.Tool{workingDirectoryTool{workspace}, listFilesTool{workspace}, globFilesTool{workspace}, readFileTool{workspace}, searchCodeTool{workspace}, gitStatusTool{workspace}, gitDiffTool{workspace}} {
-		if err := reviewRegistry.Register(tool); err != nil {
-			return err
-		}
-	}
-	maxTokens := 2048
-	reviewAgent, err := agent.New(agent.Config{Key: "icoder.reviewer", ModelName: modelName, MaxSteps: 10, MaxTokens: &maxTokens, AllowedTools: reviewRegistry.Names()}, model, reviewRegistry)
-	if err != nil {
-		return err
-	}
-	runner := &reviewRunner{agent: reviewAgent, results: make(map[subagent.ResultRef]string)}
-	service, err := subagent.New(subagent.Options{Store: subagent.NewMemoryStore(), Runner: runner, ParentWaker: wakeRecorder{}, WorkerID: "icoder-worker", LeaseDuration: time.Minute})
-	if err != nil {
-		return err
-	}
-	return registry.Register(&delegateReviewTool{service: service, runner: runner, sessionID: sessionID})
+	return manager, entries, nil
 }
 
 func errorsJoin(left, right error) error {

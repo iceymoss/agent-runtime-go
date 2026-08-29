@@ -130,6 +130,24 @@ Key behavior:
 - If `Runner.Run` returns an error, the task is not dropped: Service converts to `ChildSuspended` with `Retryable: true`, then retries after `Reconcile` reclaim.
 - Terminal state is persisted first, then wake is delivered: wake failure only affects `ReconcileReport.WakeFailures`; facts are kept and the next `Reconcile` redelivers.
 
+## Writing your own storage adapter
+
+Depth, fan-out, cycle detection, and the tree budget are **safety limits**, not bookkeeping. An adapter that restated them would not fail loudly when it got one wrong - it would quietly allow a deeper tree, a wider fan-out, or more spend than the caller authorized. They are therefore exported as pure functions for adapters to call:
+
+```go
+child := subagent.NewChildRef(tenant, request.RequestKey, depth)
+if err := subagent.ValidateNoCycle(request.Parent.RunKey, child.RunKey, s.parentLookup(tenant)); err != nil { ... }
+if err := subagent.ValidateDepth(depth, budget.Limits); err != nil { ... }
+if err := subagent.ValidateFanout(directChildren, budget.Limits); err != nil { ... }
+budget, err = budget.Reserve(request.Reserve)     // the budget is committed before the child runs
+```
+
+Available entry points: `ValidateSpawn`, `SpecDigest` (idempotency fingerprint), `DeriveRunKey` / `DeriveRelationshipKey` / `DeriveSessionKey` (deterministic identity), `NewChildRef`, `EffectiveLimits`, `ValidateDepth` / `ValidateFanout` / `ValidateNoCycle` (with `ParentLookup`), `ValidateUsage`, `ExceedsReservation`, and `BudgetSnapshot.Reserve` / `Settle`.
+
+The adapter owns only what storage owns: **finding the parent**, **counting siblings**, and **writing atomically**. Storage supplies the graph walk through `ParentLookup`; the library decides what counts as a cycle.
+
+Verify the result with `agenttest.TestSubagentStore`.
+
 ## FAQ
 
 **Q: Retrying `Spawn` returns `ErrIdempotencyConflict`—isn't it idempotent?**

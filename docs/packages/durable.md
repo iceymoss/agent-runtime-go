@@ -113,6 +113,51 @@ terminal: true revision: 4
 - 进入非 `StatusRunning` 状态时租约字段被自动清空；终态（`StatusCompleted`/`StatusFailed`/`StatusAbandoned`）不可再变，任何写入返回 `ErrTerminal`。
 - `MemoryStore` 是参考实现，进程重启即丢数据；生产环境需要基于数据库自己实现 `Store`/`ExecutionLedger`/`UsageLedger`，尤其要保证 `Save` 的四项比较和 `RevokeLease` 的"吊销 + 标记 unknown effect"在同一个事务里。
 
+## 接到根包 `Agent.Run`
+
+根包的 durable 执行入口是 `agent.CheckpointStore`。`durable.CheckpointAdapter` 把 `Store` + `ExecutionLedger` 投影成这个端口，调用方不必自己重写一遍相位状态机：
+
+```go
+adapter, err := durable.NewCheckpointAdapter(durable.CheckpointAdapterOptions{
+	Store:      store, // *MemoryStore 或你自己的数据库实现
+	Ledger:     store,
+	AttemptKey: "attempt-1", // 本次 attempt 的标识，写进 effect 台账
+})
+if err != nil {
+	log.Fatal(err)
+}
+
+result, err := runner.Run(ctx, agent.RunRequest{
+	Messages: []agent.Message{agent.NewUserMessage("修复失败的测试")},
+	DurableRun: &agent.DurableRunConfig{
+		Identity:        agent.RunIdentity{RunKey: "run-001", AgentKey: "coder", SessionID: "s-1", RequestID: "r-1"},
+		CheckpointStore: adapter,
+		LeaseOwner:      "worker-1",
+		LeaseDuration:   time.Minute,
+	},
+})
+```
+
+映射规则：
+
+- run 生命周期的每次变更（`ModelInflight` / `CommitModelResponse` / `PrepareTools` / `CommitTool` / `Suspend` / `Complete` / `Fail`）都落成**一次** `Store.Save`，相位由 checkpoint 推导：还有 `PendingToolCalls` 就是 `PhaseToolsReady`，已完成就是 `PhaseFinalizing`，否则回到 `PhaseModelReady`。
+- 工具生命周期落到 effect 台账，key 用 `ToolExecutionKey`——它与根包 `ToolExecution.IdempotencyKey` 逐字节相同，所以两层用的是同一个去重锚点。
+- `Suspend` 用 `Save` 而不是 `Release`：挂起的 run 必须连同 checkpoint 里的 blocker 一起持久化，后续 attempt 才能凭 `DurableRun.ToolResume` 精确恢复到那一个工具调用。
+- `Acquire` 允许接管 `StatusSuspended` 的 run（`AllowSuspended: true`），因为审批挂起和子 Agent 挂起本来就要由后续 attempt 继续；仍在有效期内的租约依然会被拒绝。
+- 错误同时满足两套哨兵：`ErrLeaseLost` 之类会被包成 `agent.ErrCheckpointConflict`，`ErrToolEffectUnknown` 会被包成 `agent.ErrToolExecutionUnknown`，两边都能用 `errors.Is` 判断。
+
+### unknown effect 的重放
+
+崩溃留下的 `EffectUnknown` 默认永远不会自动重放。如果某个工具的 `ReplayPolicy` 已经证明重放是安全的（`agent.ReplayPolicyIdempotent`），台账可以实现可选扩展接口：
+
+```go
+type EffectReplayer interface {
+	ReplayEffect(context.Context, Guard, ExecutionKey, time.Time) (EffectRecord, error)
+}
+```
+
+`MemoryStore` 已经实现了它。适配器只有在运行时明确告知"这个工具可安全重放"时才会调用；没有实现该接口的台账保持保守默认，`BeginTool` 直接返回 `agent.ErrToolExecutionUnknown`。
+
 ## 常见问题
 
 **Q: `ErrLeaseHeld` 和 `ErrLeaseLost` 有什么区别？**

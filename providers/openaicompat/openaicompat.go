@@ -25,6 +25,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -111,6 +112,18 @@ func New(baseURL, apiKey string, opts ...Option) *Model {
 			ToolChoiceNone:     true,
 			ToolChoiceRequired: true,
 			ToolChoiceNamed:    true,
+			// response_format is part of the Chat Completions spec this adapter
+			// projects onto. A server that ignores it returns unconstrained text
+			// rather than failing, so point WithCapabilities at a narrower set if
+			// your endpoint cannot honor it and you would rather be refused.
+			StructuredOutput: true,
+			// Declared because the adapter surfaces reasoning_content when a
+			// provider sends it. A provider that never does simply produces
+			// messages without reasoning parts.
+			Reasoning: true,
+			// Declared because normalizeUsage maps the vendor-specific cache and
+			// reasoning token fields into agent.Usage rather than leaving them out.
+			UsageDetails: true,
 		},
 	}
 	for _, opt := range opts {
@@ -137,7 +150,7 @@ func (m *Model) Stream(ctx context.Context, request *agent.GenerateRequest) (<-c
 		if err != nil {
 			return nil, err
 		}
-		return synthesizeChunks(response), nil
+		return agent.StreamResponse(response), nil
 	}
 	wire, err := projectChatRequest(request)
 	if err != nil {
@@ -157,7 +170,7 @@ func (m *Model) Stream(ctx context.Context, request *agent.GenerateRequest) (<-c
 		if err != nil {
 			return nil, err
 		}
-		return synthesizeChunks(response), nil
+		return agent.StreamResponse(response), nil
 	}
 	if contentType != "" && !strings.HasPrefix(contentType, "text/event-stream") {
 		httpResponse.Body.Close()
@@ -230,12 +243,12 @@ func (m *Model) post(ctx context.Context, wire chatRequest) (*http.Response, err
 	if httpResponse.StatusCode < 200 || httpResponse.StatusCode >= 300 {
 		defer httpResponse.Body.Close()
 		snippet, _ := io.ReadAll(io.LimitReader(httpResponse.Body, maxErrorBodyBytes))
-		return nil, classifyStatus(httpResponse.StatusCode, snippet)
+		return nil, classifyStatus(httpResponse.StatusCode, httpResponse.Header.Get("Retry-After"), snippet)
 	}
 	return httpResponse, nil
 }
 
-func classifyStatus(status int, body []byte) error {
+func classifyStatus(status int, retryAfterHeader string, body []byte) error {
 	kind, retryable := agent.ModelErrorKindRejected, false
 	switch {
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
@@ -245,8 +258,59 @@ func classifyStatus(status int, body []byte) error {
 	case status >= 500:
 		kind, retryable = agent.ModelErrorKindTransport, true
 	}
+	// The cause carries the raw body for a log; the safe detail carries only the
+	// provider's own message, which is the part an operator needs to see and the
+	// part that is safe to show.
 	cause := fmt.Errorf("provider status %d: %s", status, strings.TrimSpace(string(body)))
-	return agent.NewModelError(kind, retryable, status, 0, "provider rejected request", cause)
+	return agent.NewModelError(kind, retryable, status, parseRetryAfter(retryAfterHeader), safeDetail(body), cause)
+}
+
+// safeDetail extracts the provider's own explanation of a failure.
+//
+// Without it every 4xx reads the same, and an operator debugging a rejected
+// request has to go find the raw body somewhere else. The message is
+// provider-authored text about the request, so it is safe to surface; the body
+// as a whole is not, and stays in the cause.
+func safeDetail(body []byte) string {
+	var decoded struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil || decoded.Error.Message == "" {
+		return "provider rejected request"
+	}
+	if decoded.Error.Type != "" {
+		return fmt.Sprintf("provider rejected request: %s (%s)", decoded.Error.Message, decoded.Error.Type)
+	}
+	return fmt.Sprintf("provider rejected request: %s", decoded.Error.Message)
+}
+
+// parseRetryAfter reads the standard header in either of its two forms.
+//
+// A rate-limited provider knows when it will accept work again, and dropping
+// that leaves every retry policy guessing - including the one in providers/retry,
+// which honors RetryAfter over its own backoff curve when it is present.
+func parseRetryAfter(header string) time.Duration {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(header); err == nil {
+		if seconds <= 0 {
+			return 0
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	deadline, err := http.ParseTime(header)
+	if err != nil {
+		return 0
+	}
+	if wait := time.Until(deadline); wait > 0 {
+		return wait
+	}
+	return 0
 }
 
 // pendingToolCall accumulates streamed tool call fragments for one index.
@@ -274,6 +338,7 @@ func (m *Model) consumeSSE(ctx context.Context, body io.ReadCloser, chunks chan<
 
 	var (
 		text      strings.Builder
+		reasoning strings.Builder
 		pending   = make(map[int]*pendingToolCall)
 		finish    string
 		modelName string
@@ -306,6 +371,22 @@ func (m *Model) consumeSSE(ctx context.Context, body io.ReadCloser, chunks chan<
 					usage = chunk.Usage
 				}
 				for _, choice := range chunk.Choices {
+					// A usage-only chunk after the finish reason is normal - that is
+					// what stream_options.include_usage produces. Content after it is
+					// not: the model already said it was done, so anything more is a
+					// broken upstream or a proxy injecting text, and accepting it
+					// would silently change the answer.
+					if finish != "" && (choice.Delta.Content != "" || len(choice.Delta.ToolCalls) > 0 ||
+						choice.Delta.ReasoningContent != "" || choice.Delta.Reasoning != "") {
+						fail(agent.NewModelError(agent.ModelErrorKindProtocol, false, 0, 0, "content arrived after the finish reason", nil))
+						return
+					}
+					if delta := deltaReasoning(choice.Delta.ReasoningContent, choice.Delta.Reasoning); delta != "" {
+						reasoning.WriteString(delta)
+						if !emit(agent.StreamChunk{Type: agent.ChunkReasoning, TextDelta: delta}) {
+							return
+						}
+					}
 					if choice.Delta.Content != "" {
 						text.WriteString(choice.Delta.Content)
 						if !emit(agent.StreamChunk{Type: agent.ChunkText, TextDelta: choice.Delta.Content}) {
@@ -347,6 +428,11 @@ func (m *Model) consumeSSE(ctx context.Context, body io.ReadCloser, chunks chan<
 
 	reason := mapFinishReason(finish, len(calls) > 0)
 	message := agent.Message{Role: agent.RoleAssistant, FinishReason: reason}
+	// Reasoning comes first so a stored message reads in the order it was
+	// produced. It is never projected back into a request; see projectChatRequest.
+	if reasoning.Len() > 0 {
+		message.Parts = append(message.Parts, agent.ContentPart{Type: agent.PartReasoning, Text: reasoning.String()})
+	}
 	if text.Len() > 0 {
 		message.Parts = append(message.Parts, agent.ContentPart{Type: agent.PartText, Text: text.String()})
 	}
@@ -357,11 +443,19 @@ func (m *Model) consumeSSE(ctx context.Context, body io.ReadCloser, chunks chan<
 			return
 		}
 	}
+	normalized := normalizeUsage(usage)
+	// The non-streaming path already refuses incoherent usage; a stream must not
+	// be the lenient one, or the same provider bug becomes visible only when
+	// streaming is off.
+	if err := normalized.Validate(); err != nil {
+		fail(agent.NewModelError(agent.ModelErrorKindProtocol, false, 0, 0, "provider reported incoherent usage", err))
+		return
+	}
 	emit(agent.StreamChunk{Type: agent.ChunkFinish, Response: &agent.Response{
 		Message:      message,
 		FinishReason: reason,
 		ModelName:    modelName,
-		Usage:        normalizeUsage(usage),
+		Usage:        normalized,
 	}})
 }
 
@@ -394,34 +488,45 @@ func mapFinishReason(finish string, hasToolCalls bool) agent.FinishReason {
 	}
 }
 
-func synthesizeChunks(response *agent.Response) <-chan agent.StreamChunk {
-	chunks := make(chan agent.StreamChunk, len(response.Message.Parts)+1)
-	for _, part := range response.Message.Parts {
-		switch part.Type {
-		case agent.PartText:
-			chunks <- agent.StreamChunk{Type: agent.ChunkText, TextDelta: part.Text}
-		case agent.PartToolCall:
-			call := *part.ToolCall
-			chunks <- agent.StreamChunk{Type: agent.ChunkToolCall, ToolCall: &call}
-		}
-	}
-	chunks <- agent.StreamChunk{Type: agent.ChunkFinish, Response: response}
-	close(chunks)
-	return chunks
-}
-
 // --- wire protocol ---
 
 type chatRequest struct {
-	Model         string         `json:"model"`
-	Messages      []chatMessage  `json:"messages"`
-	Tools         []chatTool     `json:"tools,omitempty"`
-	ToolChoice    any            `json:"tool_choice,omitempty"`
-	Temperature   *float64       `json:"temperature,omitempty"`
-	MaxTokens     *int           `json:"max_tokens,omitempty"`
-	TopP          *float64       `json:"top_p,omitempty"`
-	Stream        bool           `json:"stream,omitempty"`
-	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+	Model          string              `json:"model"`
+	Messages       []chatMessage       `json:"messages"`
+	Tools          []chatTool          `json:"tools,omitempty"`
+	ToolChoice     any                 `json:"tool_choice,omitempty"`
+	Temperature    *float64            `json:"temperature,omitempty"`
+	MaxTokens      *int                `json:"max_tokens,omitempty"`
+	TopP           *float64            `json:"top_p,omitempty"`
+	Stream         bool                `json:"stream,omitempty"`
+	StreamOptions  *streamOptions      `json:"stream_options,omitempty"`
+	ResponseFormat *chatResponseFormat `json:"response_format,omitempty"`
+}
+
+// chatResponseFormat is the OpenAI projection of agent.ResponseFormat.
+type chatResponseFormat struct {
+	Type       string          `json:"type"`
+	JSONSchema *chatJSONSchema `json:"json_schema,omitempty"`
+}
+
+type chatJSONSchema struct {
+	Name   string          `json:"name"`
+	Schema json.RawMessage `json:"schema"`
+	Strict bool            `json:"strict,omitempty"`
+}
+
+// projectResponseFormat maps the portable constraint onto the wire field.
+// A nil format leaves the field absent, which is ordinary free-form generation.
+func projectResponseFormat(format *agent.ResponseFormat) *chatResponseFormat {
+	if format == nil {
+		return nil
+	}
+	if format.Kind == agent.ResponseFormatJSONSchema {
+		return &chatResponseFormat{Type: "json_schema", JSONSchema: &chatJSONSchema{
+			Name: format.Name, Schema: format.Schema, Strict: format.Strict,
+		}}
+	}
+	return &chatResponseFormat{Type: "json_object"}
 }
 
 type streamOptions struct {
@@ -434,6 +539,11 @@ type chatMessage struct {
 	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	Name       string         `json:"name,omitempty"`
+	// ReasoningContent and Reasoning are read from non-streaming responses and
+	// never written: sending a model its own reasoning back is rejected by the
+	// providers that produce it.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+	Reasoning        string `json:"reasoning,omitempty"`
 }
 
 type chatTool struct {
@@ -486,8 +596,12 @@ type wireStreamChunk struct {
 	Model   string `json:"model"`
 	Choices []struct {
 		Delta struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
+			Content string `json:"content"`
+			// Reasoning content is not in the OpenAI spec; DeepSeek, Qwen, and
+			// several gateways emit it under one of these two names.
+			ReasoningContent string `json:"reasoning_content"`
+			Reasoning        string `json:"reasoning"`
+			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Function struct {
@@ -503,7 +617,8 @@ type wireStreamChunk struct {
 }
 
 func projectChatRequest(request *agent.GenerateRequest) (chatRequest, error) {
-	wire := chatRequest{Model: request.Model, Temperature: request.Temperature, MaxTokens: request.MaxTokens, TopP: request.TopP}
+	wire := chatRequest{Model: request.Model, Temperature: request.Temperature, MaxTokens: request.MaxTokens, TopP: request.TopP,
+		ResponseFormat: projectResponseFormat(request.ResponseFormat)}
 	for _, message := range request.Messages {
 		if message.Role == agent.RoleTool {
 			for _, result := range message.ToolResults() {
@@ -516,6 +631,9 @@ func projectChatRequest(request *agent.GenerateRequest) (chatRequest, error) {
 				return chatRequest{}, agent.NewModelError(agent.ModelErrorKindUnsupported, false, 0, 0, "image input is not supported by the openaicompat adapter", nil)
 			}
 		}
+		// Message.Text() excludes reasoning parts, which is deliberate: providers
+		// reject their own reasoning as assistant input, and replaying a chain of
+		// thought as conversation would change the question being answered.
 		projected := chatMessage{Role: string(message.Role), Content: message.Text()}
 		for _, call := range message.ToolCalls() {
 			projected.ToolCalls = append(projected.ToolCalls, chatToolCall{ID: call.ID, Type: "function", Function: chatFunction{Name: call.Name, Arguments: call.Input}})
@@ -547,6 +665,9 @@ func projectChatResponse(response chatResponse) (*agent.Response, error) {
 	}
 	choice := response.Choices[0]
 	message := agent.Message{Role: agent.RoleAssistant}
+	if delta := deltaReasoning(choice.Message.ReasoningContent, choice.Message.Reasoning); delta != "" {
+		message.Parts = append(message.Parts, agent.ContentPart{Type: agent.PartReasoning, Text: delta})
+	}
 	if choice.Message.Content != "" {
 		message.Parts = append(message.Parts, agent.ContentPart{Type: agent.PartText, Text: choice.Message.Content})
 	}
@@ -588,4 +709,16 @@ func normalizeUsage(wire *wireUsage) agent.Usage {
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens + usage.CacheCreationTokens + usage.CacheReadTokens
 	}
 	return usage
+}
+
+// deltaReasoning picks whichever field this provider uses for reasoning.
+//
+// The name is not standardized: DeepSeek sends reasoning_content, several
+// gateways send reasoning, and OpenAI sends neither. Preferring the more
+// specific name keeps a provider that sends both from being double-counted.
+func deltaReasoning(reasoningContent, reasoning string) string {
+	if reasoningContent != "" {
+		return reasoningContent
+	}
+	return reasoning
 }

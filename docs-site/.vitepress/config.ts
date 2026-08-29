@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 const packageNames = [
   "agent",
   "openaicompat",
+  "retry",
   "provider",
   "prompt",
   "context",
@@ -59,6 +60,7 @@ const zhSidebar: DefaultTheme.Sidebar = [
     text: "模型与提示",
     collapsed: false,
     items: [
+      { text: "retry", link: "/docs/packages/retry" },
       { text: "provider", link: "/docs/packages/provider" },
       { text: "prompt", link: "/docs/packages/prompt" },
       { text: "context", link: "/docs/packages/context" },
@@ -125,6 +127,7 @@ const enSidebar: DefaultTheme.Sidebar = [
     text: "Models & prompts",
     collapsed: false,
     items: [
+      { text: "retry", link: "/en/docs/packages/retry" },
       { text: "provider", link: "/en/docs/packages/provider" },
       { text: "prompt", link: "/en/docs/packages/prompt" },
       { text: "context", link: "/en/docs/packages/context" },

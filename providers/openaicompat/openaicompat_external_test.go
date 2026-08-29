@@ -326,3 +326,305 @@ func TestStreamErrorChunkFailsRun(t *testing.T) {
 		t.Errorf("expected rejected kind, got %q", modelErr.Kind)
 	}
 }
+
+// TestResponseFormatProjection pins how the portable constraint reaches an
+// OpenAI-compatible endpoint, because an agent whose answer is parsed by code
+// depends on the provider - not the runtime - actually enforcing it.
+func TestResponseFormatProjection(t *testing.T) {
+	tests := []struct {
+		name       string
+		format     *agent.ResponseFormat
+		wantType   string
+		wantSchema bool
+		wantStrict bool
+	}{
+		{name: "unconstrained generation sends no field"},
+		{name: "json mode", format: &agent.ResponseFormat{Kind: agent.ResponseFormatJSON}, wantType: "json_object"},
+		{
+			name: "json schema carries name, schema, and strict",
+			format: &agent.ResponseFormat{
+				Kind: agent.ResponseFormatJSONSchema, Name: "city",
+				Schema: json.RawMessage(`{"type":"object"}`), Strict: true,
+			},
+			wantType: "json_schema", wantSchema: true, wantStrict: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var decoded struct {
+				ResponseFormat *struct {
+					Type       string `json:"type"`
+					JSONSchema *struct {
+						Name   string          `json:"name"`
+						Schema json.RawMessage `json:"schema"`
+						Strict bool            `json:"strict"`
+					} `json:"json_schema"`
+				} `json:"response_format"`
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read request: %v", err)
+				}
+				if err := json.Unmarshal(body, &decoded); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				writeSSE(t, w,
+					`{"choices":[{"delta":{"content":"{}"},"finish_reason":null}]}`,
+					`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+					`[DONE]`,
+				)
+			}))
+			defer server.Close()
+
+			model := openaicompat.New(server.URL, "key")
+			runner, err := agent.New(agent.Config{
+				Key: "extract", ModelName: "test-model", MaxSteps: 4, AllowedTools: []string{},
+				ResponseFormat: test.format,
+			}, model, agent.NewRegistry())
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			if _, err := runner.Run(context.Background(), agent.RunRequest{
+				Messages: []agent.Message{agent.NewUserMessage("extract")},
+			}); err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if test.wantType == "" {
+				if decoded.ResponseFormat != nil {
+					t.Fatalf("response_format = %+v, want absent", decoded.ResponseFormat)
+				}
+				return
+			}
+			if decoded.ResponseFormat == nil || decoded.ResponseFormat.Type != test.wantType {
+				t.Fatalf("response_format = %+v, want type %q", decoded.ResponseFormat, test.wantType)
+			}
+			schema := decoded.ResponseFormat.JSONSchema
+			if test.wantSchema {
+				if schema == nil || schema.Name != "city" || string(schema.Schema) != `{"type":"object"}` || schema.Strict != test.wantStrict {
+					t.Fatalf("json_schema = %+v", schema)
+				}
+			} else if schema != nil {
+				t.Fatalf("json mode sent a schema: %+v", schema)
+			}
+		})
+	}
+}
+
+// TestReasoningRoundTrip covers the two halves that make a reasoning model
+// usable: the adapter surfaces the provider's thinking, and it never sends that
+// thinking back - providers that emit reasoning reject it as assistant input.
+func TestReasoningRoundTrip(t *testing.T) {
+	var requests []struct {
+		Messages []struct {
+			Role             string `json:"role"`
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
+			Reasoning        string `json:"reasoning"`
+		} `json:"messages"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request: %v", err)
+		}
+		var decoded struct {
+			Messages []struct {
+				Role             string `json:"role"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+				Reasoning        string `json:"reasoning"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		requests = append(requests, decoded)
+		if len(requests) == 1 {
+			writeSSE(t, w,
+				`{"choices":[{"delta":{"reasoning_content":"the city is in China"},"finish_reason":null}]}`,
+				`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"get_weather","arguments":"{\"city\":\"Hangzhou\"}"}}]},"finish_reason":null}]}`,
+				`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+				`[DONE]`,
+			)
+			return
+		}
+		writeSSE(t, w,
+			`{"choices":[{"delta":{"reasoning":"sunny and 28"},"finish_reason":null}]}`,
+			`{"choices":[{"delta":{"content":"It is sunny in Hangzhou."},"finish_reason":null}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+			`[DONE]`,
+		)
+	}))
+	defer server.Close()
+
+	registry := agent.NewRegistry()
+	if err := registry.Register(weatherTool{}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+	runner, err := agent.New(agent.Config{Key: "weather", ModelName: "test-model", MaxSteps: 4},
+		openaicompat.New(server.URL, "key"), registry)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	result, err := runner.Run(context.Background(), agent.RunRequest{
+		Messages: []agent.Message{agent.NewUserMessage("weather in Hangzhou?")},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Text != "It is sunny in Hangzhou." {
+		t.Fatalf("RunResult.Text = %q", result.Text)
+	}
+	// Both spellings are surfaced, and neither leaks into the answer.
+	var reasoning []string
+	for _, message := range result.Messages {
+		if thinking := message.Reasoning(); thinking != "" {
+			reasoning = append(reasoning, thinking)
+		}
+	}
+	if len(reasoning) != 2 || reasoning[0] != "the city is in China" || reasoning[1] != "sunny and 28" {
+		t.Fatalf("reasoning = %#v", reasoning)
+	}
+	// The second request replays the first turn; the thinking must not be in it.
+	if len(requests) != 2 {
+		t.Fatalf("provider was called %d times", len(requests))
+	}
+	for _, message := range requests[1].Messages {
+		if message.ReasoningContent != "" || message.Reasoning != "" {
+			t.Fatalf("the adapter sent reasoning back upstream: %+v", message)
+		}
+		if strings.Contains(message.Content, "the city is in China") {
+			t.Fatalf("reasoning leaked into assistant content: %+v", message)
+		}
+	}
+}
+
+// TestOptions covers every option the README tells people to use.
+//
+// They were documented and shipped without a single test, which is how a
+// documented flag quietly stops doing what its doc comment says.
+func TestOptions(t *testing.T) {
+	t.Run("WithName renames the adapter", func(t *testing.T) {
+		if got := openaicompat.New("http://example.invalid", "", openaicompat.WithName("deepseek")).Name(); got != "deepseek" {
+			t.Fatalf("Name() = %q", got)
+		}
+		if openaicompat.New("http://example.invalid", "").Name() == "" {
+			t.Fatal("the default adapter has no name")
+		}
+	})
+
+	t.Run("WithCapabilities narrows what the runtime will request", func(t *testing.T) {
+		narrowed := agent.Capabilities{Tools: true}
+		model := openaicompat.New("http://example.invalid", "", openaicompat.WithCapabilities(narrowed))
+		if model.Capabilities() != narrowed {
+			t.Fatalf("Capabilities() = %+v", model.Capabilities())
+		}
+		// Narrowing must actually be enforced: an agent that asks for structured
+		// output from an endpoint that cannot do it should fail at assembly.
+		if _, err := agent.New(agent.Config{
+			Key: "extract", ModelName: "m", MaxSteps: 4, AllowedTools: []string{},
+			ResponseFormat: &agent.ResponseFormat{Kind: agent.ResponseFormatJSON},
+		}, model, agent.NewRegistry()); !errors.Is(err, agent.ErrAgentConfigInvalid) {
+			t.Fatalf("New() error = %v, want the narrowed capability to be enforced", err)
+		}
+	})
+
+	t.Run("WithHeader is sent on every request", func(t *testing.T) {
+		var seen []string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			seen = append(seen, r.Header.Get("X-Title")+"|"+r.Header.Get("Authorization"))
+			writeSSE(t, w,
+				`{"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}`,
+				`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+				`[DONE]`,
+			)
+		}))
+		defer server.Close()
+		model := openaicompat.New(server.URL, "secret", openaicompat.WithHeader("X-Title", "icoder"))
+		if _, err := runOnce(t, model); err != nil {
+			t.Fatal(err)
+		}
+		if len(seen) != 1 || seen[0] != "icoder|Bearer secret" {
+			t.Fatalf("headers = %#v", seen)
+		}
+	})
+
+	t.Run("WithHTTPClient replaces the transport", func(t *testing.T) {
+		var used bool
+		client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			used = true
+			return http.DefaultTransport.RoundTrip(r)
+		})}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeSSE(t, w,
+				`{"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}`,
+				`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+				`[DONE]`,
+			)
+		}))
+		defer server.Close()
+		if _, err := runOnce(t, openaicompat.New(server.URL, "", openaicompat.WithHTTPClient(client))); err != nil {
+			t.Fatal(err)
+		}
+		if !used {
+			t.Fatal("the configured HTTP client was not used")
+		}
+	})
+
+	t.Run("WithoutStreamUsage omits the field some providers reject", func(t *testing.T) {
+		for _, test := range []struct {
+			name    string
+			options []openaicompat.Option
+			want    bool
+		}{
+			{name: "included by default", want: true},
+			{name: "omitted when disabled", options: []openaicompat.Option{openaicompat.WithoutStreamUsage()}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				var decoded struct {
+					StreamOptions *struct {
+						IncludeUsage bool `json:"include_usage"`
+					} `json:"stream_options"`
+				}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Fatalf("read request: %v", err)
+					}
+					if err := json.Unmarshal(body, &decoded); err != nil {
+						t.Fatalf("decode request: %v", err)
+					}
+					writeSSE(t, w,
+						`{"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}`,
+						`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+						`[DONE]`,
+					)
+				}))
+				defer server.Close()
+				if _, err := runOnce(t, openaicompat.New(server.URL, "", test.options...)); err != nil {
+					t.Fatal(err)
+				}
+				if got := decoded.StreamOptions != nil; got != test.want {
+					t.Fatalf("stream_options present = %v, want %v", got, test.want)
+				}
+			})
+		}
+	})
+}
+
+// runOnce drives one complete run through a model, which is the only way to
+// observe what an option did to the request the adapter actually sent.
+func runOnce(t *testing.T, model agent.Model) (*agent.RunResult, error) {
+	t.Helper()
+	runner, err := agent.New(agent.Config{Key: "options", ModelName: "m", MaxSteps: 4, AllowedTools: []string{}},
+		model, agent.NewRegistry())
+	if err != nil {
+		return nil, err
+	}
+	return runner.Run(context.Background(), agent.RunRequest{Messages: []agent.Message{agent.NewUserMessage("hi")}})
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

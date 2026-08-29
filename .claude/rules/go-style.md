@@ -1,0 +1,10 @@
+- gofmt 是 CI 硬门槛（`test -z "$(gofmt -l .)"`），改完代码必须跑 `gofmt -l .` 且输出为空；行尾 LF 由 `.gitattributes` 保证，不要改动
+- 根模块目标 Go 1.25.0，只允许两个直接依赖（`santhosh-tekuri/jsonschema/v6`、`go.yaml.in/yaml/v3`）。"依赖极少"是这个库的卖点，**新增任何第三方依赖前必须先与用户确认**
+- 根包不读环境变量、不选凭据、不连数据库、不注册隐式全局工具；这些策略属于调用方的组装根（composition root），不要往库里塞
+- 错误不吞：包装用 `%w` 保留 cause（`fmt.Errorf("%w: ...", ErrXxx, ...)`）。哨兵错误集中在 `llm.go`、`recovery.go`、`store.go` 和各子包 `errors.go`，新增前先确认没有可复用的
+- 跨 API 边界的数据一律深拷贝（`cloneMessages` / `cloneToolDefinition` / `cloneObservation` / `Clone()`）。给这些类型加字段时必须同步拷贝逻辑，切片和 map 不能与调用方共享底层数组
+- 并发：`*Agent` 无状态、可跨 goroutine 和会话复用；有状态组件（`Registry`、`session.SessionAgent`、`coordinator.Coordinator`）自带锁，改动时保持锁边界，不要把锁或内部可变状态泄漏给调用方
+- 资源用 defer 关闭；长循环和后台 goroutine 必须尊重 `ctx.Done()`，不要起无法取消的协程
+- 导出符号的 doc comment 用完整句子说明**为什么**存在这个约束（参考 `New`、`NewLoopDetector`、`contextReserve`），不要只把函数名重复一遍
+- 代码、注释、文档、commit message 一律英文（与现有仓库一致）；与用户对话用中文
+- `demo/icoder` 是独立 module（`replace => ../..`），依赖 CGO + SQLite。改根包公开 API 后必须同步验证 demo 能编译通过，CI 会单独 vet/test 它

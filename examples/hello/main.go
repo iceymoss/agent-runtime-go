@@ -13,24 +13,19 @@ func (helloModel) Name() string { return "hello" }
 
 func (helloModel) Capabilities() agent.Capabilities { return agent.Capabilities{} }
 
-func (helloModel) Stream(ctx context.Context, _ *agent.GenerateRequest) (<-chan agent.StreamChunk, error) {
-	chunks := make(chan agent.StreamChunk, 2)
-	go func() {
-		defer close(chunks)
-		message := agent.NewAssistantMessage("Hello from Agent Runtime for Go.")
-		select {
-		case chunks <- agent.StreamChunk{Type: agent.ChunkText, TextDelta: message.Text()}:
-		case <-ctx.Done():
-			return
-		}
-		select {
-		case chunks <- agent.StreamChunk{Type: agent.ChunkFinish, Response: &agent.Response{
-			Message: message, FinishReason: agent.FinishStop, ModelName: "hello-v1",
-		}}:
-		case <-ctx.Done():
-		}
-	}()
-	return chunks, nil
+// Stream returns the model's answer as the runtime's chunk stream.
+//
+// An adapter that already holds the whole response - a non-streaming endpoint,
+// a cached reply, or a fake like this one - hands it to agent.StreamResponse,
+// which emits the deltas and the terminal chunk consistently. An adapter that
+// genuinely streams emits its own deltas instead and finishes with one
+// ChunkFinish whose response matches them.
+func (helloModel) Stream(context.Context, *agent.GenerateRequest) (<-chan agent.StreamChunk, error) {
+	return agent.StreamResponse(&agent.Response{
+		Message:      agent.NewAssistantMessage("Hello from Agent Runtime for Go."),
+		FinishReason: agent.FinishStop,
+		ModelName:    "hello-v1",
+	}), nil
 }
 
 func main() {

@@ -3,193 +3,21 @@ package icoder
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/iceymoss/agent-runtime-go"
 	"github.com/iceymoss/agent-runtime-go/permission"
+	toollifecycle "github.com/iceymoss/agent-runtime-go/tool"
 )
 
 const policyVersion permission.PolicyVersion = "icoder-policy-v1"
-
-type authorizedTool struct {
-	tool        agent.Tool
-	permission  permission.Service
-	action      string
-	resource    func(string) permission.Resource
-	sessionID   func() string
-	now         func() time.Time
-	approvalTTL time.Duration
-}
-
-func (t *authorizedTool) Definition() agent.ToolDefinition { return t.tool.Definition() }
-func (t *authorizedTool) ReplayPolicy() agent.ReplayPolicy { return t.tool.ReplayPolicy() }
-
-func (t *authorizedTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
-	inputDigest := permission.InputDigest(digest([]byte(invocation.RawInput)))
-	run := currentRunContext(ctx)
-	sessionID := run.session
-	if sessionID == "" {
-		sessionID = t.sessionID()
-	}
-	if run.id == "" {
-		run.id = sessionID
-	}
-	requestKey := permission.RequestKey(digest([]byte(run.id + "\x00" + invocation.CallID + "\x00" + invocation.Name + "\x00" + invocation.RawInput)))
-	check := permission.CheckRequest{
-		RequestKey: requestKey,
-		Subject:    permission.Subject{TenantKey: "local", PrincipalKey: "cli-user", ActorType: "human"},
-		Resource:   t.resource(invocation.RawInput), SessionRef: sessionID,
-		RunRef: permission.RunRef(run.id), AttemptRef: permission.AttemptRef(run.id),
-		ExecutionRef: permission.ExecutionRef(requestKey), FenceToken: 1,
-		ToolCallID: invocation.CallID, ToolName: invocation.Name, Action: t.action,
-		InputDigest: inputDigest, ToolGeneration: "icoder-tools-v1", DefinitionDigest: "icoder-v1",
-		PolicyVersion: policyVersion, ApprovalExpiresAt: t.approvalExpiresAt(),
-	}
-	decision, err := t.permission.Check(ctx, check)
-	if err != nil {
-		return agent.ToolResult{}, err
-	}
-	if err := recordRunFact(ctx, run, invocation.CallID+":permission-checked", "agent.permission.checked", map[string]any{"tool": invocation.Name, "action": t.action, "resource": check.Resource, "input_digest": inputDigest, "decision": decision.Decision, "reason_code": decision.ReasonCode}); err != nil {
-		return agent.ToolResult{}, err
-	}
-	switch decision.Decision {
-	case permission.DecisionAllow:
-		return t.executeAndRecord(ctx, invocation, run)
-	case permission.DecisionAsk:
-		if err := recordRunFact(ctx, run, invocation.CallID+":approval-requested", "agent.approval.requested", map[string]any{"tool": invocation.Name, "action": t.action, "resource": check.Resource, "input_digest": inputDigest}); err != nil {
-			return agent.ToolResult{}, err
-		}
-		return t.askAndExecute(ctx, invocation, check, decision, run.approve)
-	default:
-		return agent.ToolResult{IsError: true, StopTurn: true, Content: "permission denied: " + decision.ReasonCode}, nil
-	}
-}
-
-func (t *authorizedTool) approvalExpiresAt() time.Time {
-	now := time.Now
-	if t.now != nil {
-		now = t.now
-	}
-	ttl := t.approvalTTL
-	if ttl <= 0 {
-		ttl = 15 * time.Minute
-	}
-	return now().Add(ttl)
-}
-
-func (t *authorizedTool) executeAndRecord(ctx context.Context, invocation agent.ToolInvocation, run runContext) (agent.ToolResult, error) {
-	if err := recordRunFact(ctx, run, invocation.CallID+":started", "agent.tool.started", map[string]any{"tool": invocation.Name}); err != nil {
-		return agent.ToolResult{}, err
-	}
-	result, err := t.tool.Execute(ctx, invocation)
-	eventType := "agent.tool.completed"
-	payload := map[string]any{"tool": invocation.Name, "is_error": result.IsError, "stop_turn": result.StopTurn}
-	if err != nil {
-		eventType, payload["error"] = "agent.tool.failed", err.Error()
-	}
-	if eventErr := recordRunFact(context.WithoutCancel(ctx), run, invocation.CallID+":terminal", eventType, payload); eventErr != nil {
-		return result, errorsJoin(err, eventErr)
-	}
-	return result, err
-}
-
-func (t *authorizedTool) askAndExecute(ctx context.Context, invocation agent.ToolInvocation, check permission.CheckRequest, result permission.CheckResult, approve ApprovalFunc) (agent.ToolResult, error) {
-	if approve == nil || result.Approval == nil || result.Blocker == nil {
-		return agent.ToolResult{IsError: true, StopTurn: true, Content: "permission denied: interactive approval is unavailable"}, nil
-	}
-	choice, err := approve(ctx, ApprovalPrompt{ToolName: invocation.Name, Action: t.action, Resource: check.Resource.Key, Input: approvalInput(invocation.RawInput), ExpiresAt: check.ApprovalExpiresAt})
-	if err != nil {
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-		defer cancel()
-		_, _, _ = t.permission.Cancel(cleanupCtx, permission.CancelCommand{TenantKey: check.Subject.TenantKey, RequestKey: check.RequestKey, ExpectedRevision: result.Approval.Request.Revision, AttemptRef: check.AttemptRef, FenceToken: check.FenceToken})
-		return agent.ToolResult{}, err
-	}
-	if err := ctx.Err(); err != nil {
-		return agent.ToolResult{}, err
-	}
-	kind, reason := permission.ResolutionDeny, "user-rejected"
-	if choice == ApprovalApproveOnce {
-		kind, reason = permission.ResolutionApprove, "user-approved-once"
-	} else if choice == ApprovalApproveAuto {
-		kind, reason = permission.ResolutionApprove, "user-approved-auto"
-	}
-	commandKey := string(check.RequestKey) + ":" + string(kind)
-	_, _, err = t.permission.Resolve(ctx, permission.ResolveCommand{TenantKey: check.Subject.TenantKey, RequestKey: check.RequestKey, CommandKey: commandKey, DecisionKey: permission.DecisionKey(commandKey), ApproverKey: "cli-user", ExpectedRevision: result.Approval.Request.Revision, Kind: kind, ReasonCode: reason})
-	if err != nil {
-		if terminal, ok := approvalTerminalResult(err); ok {
-			return terminal, nil
-		}
-		return agent.ToolResult{}, err
-	}
-	run := currentRunContext(ctx)
-	if err := recordRunFact(ctx, run, invocation.CallID+":approval-resolved", "agent.approval.resolved", map[string]any{"tool": invocation.Name, "resolution": kind, "reason_code": reason}); err != nil {
-		return agent.ToolResult{}, err
-	}
-	if kind == permission.ResolutionDeny {
-		return agent.ToolResult{IsError: true, StopTurn: true, Content: "permission denied by user"}, nil
-	}
-	revalidated, err := t.permission.Revalidate(ctx, permission.RevalidateCommand{TenantKey: check.Subject.TenantKey, RequestKey: check.RequestKey, ResumeToken: result.Blocker.ResumeToken, AttemptRef: check.AttemptRef, FenceToken: check.FenceToken, InputDigest: check.InputDigest, PolicyVersion: check.PolicyVersion, ToolGeneration: check.ToolGeneration})
-	if err != nil {
-		if terminal, ok := approvalTerminalResult(err); ok {
-			return terminal, nil
-		}
-		return agent.ToolResult{}, err
-	}
-	if revalidated.Decision != permission.DecisionAllow {
-		return agent.ToolResult{}, fmt.Errorf("permission revalidation did not allow execution")
-	}
-	if err := recordRunFact(ctx, run, invocation.CallID+":permission-revalidated", "agent.permission.revalidated", map[string]any{"tool": invocation.Name, "decision": revalidated.Decision}); err != nil {
-		return agent.ToolResult{}, err
-	}
-	if err := ctx.Err(); err != nil {
-		return agent.ToolResult{}, err
-	}
-	return t.executeAndRecord(ctx, invocation, run)
-}
-
-func approvalTerminalResult(err error) (agent.ToolResult, bool) {
-	message := ""
-	switch {
-	case errors.Is(err, permission.ErrRequestExpired), errors.Is(err, permission.ErrGrantExpired):
-		message = "Approval expired before it was confirmed. Run the task again to request a new approval."
-	case errors.Is(err, permission.ErrRequestCanceled):
-		message = "Approval was canceled. Run the task again if you still want to continue."
-	case errors.Is(err, permission.ErrPermissionDenied):
-		message = "Permission was denied. The requested action was not performed."
-	default:
-		return agent.ToolResult{}, false
-	}
-	return agent.ToolResult{IsError: true, StopTurn: true, Content: message}, true
-}
 
 func recordRunFact(ctx context.Context, run runContext, suffix, eventType string, payload any) error {
 	if run.record == nil {
 		return nil
 	}
 	return run.record(ctx, suffix, eventType, payload)
-}
-
-func NewPermissionService(allowWrites bool) (permission.Service, error) {
-	policy := permission.PolicyFunc{PolicyVersion: policyVersion, EvaluateFunc: func(_ context.Context, request permission.CheckRequest, _ []permission.Grant) (permission.CheckResult, error) {
-		result := permission.CheckResult{PolicyVersion: request.PolicyVersion, InputDigest: request.InputDigest}
-		switch request.Action {
-		case "workspace.read", "workspace.search", "network.read", "subagent.spawn":
-			result.Decision, result.RuleKey = permission.DecisionAllow, "safe-local-operation"
-		case "workspace.write", "workspace.command", "workspace.commit", "network.tool":
-			if allowWrites {
-				result.Decision, result.RuleKey = permission.DecisionAllow, "cli-write-flag"
-			} else {
-				result.Decision, result.RuleKey = permission.DecisionAsk, "workspace-write-approval"
-				result.Constraint = permission.GrantConstraint{Scope: permission.ScopeInvocation, ExpiresAt: request.ApprovalExpiresAt}
-			}
-		default:
-			result.Decision, result.ReasonCode = permission.DecisionDeny, "no-matching-rule"
-		}
-		return result, nil
-	}}
-	return permission.NewService(permission.ServiceOptions{Policy: policy, Store: permission.NewMemoryStore()})
 }
 
 type readFileTool struct{ workspace *Workspace }
@@ -566,34 +394,47 @@ func (t writeFileTool) Execute(ctx context.Context, invocation agent.ToolInvocat
 	return agent.ToolResult{Content: `{"digest":"` + result + `"}`}, nil
 }
 
-func registerTools(registry *agent.Registry, workspace *Workspace, weather WeatherProvider, permissions permission.Service, sessionID func() string) error {
-	tools := []struct {
-		tool   agent.Tool
-		action string
-	}{
-		{workingDirectoryTool{workspace: workspace}, "workspace.read"},
-		{listFilesTool{workspace: workspace}, "workspace.read"},
-		{globFilesTool{workspace: workspace}, "workspace.read"},
-		{readFileTool{workspace: workspace}, "workspace.read"},
-		{searchCodeTool{workspace: workspace}, "workspace.search"},
-		{gitStatusTool{workspace: workspace}, "workspace.read"},
-		{gitDiffTool{workspace: workspace}, "workspace.read"},
-		{gitCommitTool{workspace: workspace}, "workspace.commit"},
-		{writeFileTool{workspace: workspace}, "workspace.write"},
-		{editFileTool{workspace: workspace}, "workspace.write"},
-		{applyPatchTool{workspace: workspace}, "workspace.write"},
-		{moveFileTool{workspace: workspace}, "workspace.write"},
-		{createDirectoryTool{workspace: workspace}, "workspace.write"},
-		{runCommandTool{workspace: workspace}, "workspace.command"},
-		{weatherTool{provider: weather}, "network.read"},
+// workspaceToolEntries declares every local tool together with the metadata the
+// executor uses to classify its effect and the resource the permission policy
+// decides about. The declaration lives here, next to the implementations, so a
+// new tool cannot be added without stating what it is allowed to do.
+func workspaceToolEntries(workspace *Workspace, weather WeatherProvider) []lifecycleEntry {
+	resource := permission.Resource{Kind: "workspace", Key: workspace.WorkingDirectory()}
+	entries := []lifecycleEntry{
+		{workingDirectoryTool{workspace: workspace}, readMetadata("workspace.read"), resource},
+		{listFilesTool{workspace: workspace}, readMetadata("workspace.read"), resource},
+		{globFilesTool{workspace: workspace}, readMetadata("workspace.read"), resource},
+		{readFileTool{workspace: workspace}, readMetadata("workspace.read"), resource},
+		{searchCodeTool{workspace: workspace}, readMetadata("workspace.search"), resource},
+		{gitStatusTool{workspace: workspace}, readMetadata("workspace.read"), resource},
+		{gitDiffTool{workspace: workspace}, readMetadata("workspace.read"), resource},
+		// create_directory is idempotent in the only sense that matters here:
+		// creating a directory that already exists changes nothing.
+		{createDirectoryTool{workspace: workspace}, toolMetadataIdempotentWrite("workspace.write"), resource},
+		{writeFileTool{workspace: workspace}, writeMetadata("workspace.write", "workspace.file"), resource},
+		{editFileTool{workspace: workspace}, writeMetadata("workspace.write", "workspace.file"), resource},
+		{applyPatchTool{workspace: workspace}, writeMetadata("workspace.write", "workspace.file"), resource},
+		{moveFileTool{workspace: workspace}, writeMetadata("workspace.write", "workspace.file"), resource},
+		{gitCommitTool{workspace: workspace}, writeMetadata("workspace.commit", "workspace.git"), resource},
+		// run_command is external rather than write: the runtime cannot know what
+		// a subprocess touched, so it is never replayed.
+		{runCommandTool{workspace: workspace}, externalMetadata("workspace.command", "workspace.command", false), resource},
 	}
-	for _, entry := range tools {
-		wrapped := &authorizedTool{tool: entry.tool, permission: permissions, action: entry.action, sessionID: sessionID, resource: func(string) permission.Resource {
-			return permission.Resource{Kind: "workspace", Key: workspace.WorkingDirectory()}
-		}}
-		if err := registry.Register(wrapped); err != nil {
-			return err
-		}
+	if weather != nil {
+		entries = append(entries, lifecycleEntry{
+			weatherTool{provider: weather},
+			externalMetadata("network.read", "network.http", true),
+			permission.Resource{Kind: "network", Key: "open-meteo"},
+		})
 	}
-	return nil
+	return entries
+}
+
+// toolMetadataIdempotentWrite describes a write whose repetition is provably
+// harmless, so recovery may replay it instead of stopping for a human.
+func toolMetadataIdempotentWrite(action string) toollifecycle.Metadata {
+	metadata := writeMetadata(action, "workspace.file")
+	metadata.Idempotency = toollifecycle.IdempotencyExecutionKey
+	metadata.ReplayPolicy = agent.ReplayPolicyIdempotent
+	return metadata
 }

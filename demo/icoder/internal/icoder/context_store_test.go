@@ -48,7 +48,7 @@ func TestSQLiteContextPivotAndMessageTail(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := agent.RunResult{Messages: []agent.Message{agent.NewAssistantMessage("first")}}
-	if err := store.CommitTurn(ctx, snapshot, "request-1", "run-1", "input-1", agent.NewUserMessage("one"), first); err != nil {
+	if err := store.CommitTurn(ctx, snapshot, "request-1", "run-1", "input-1", agent.NewUserMessage("one"), first, nil); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, _, err = store.Load(ctx, "session")
@@ -56,7 +56,7 @@ func TestSQLiteContextPivotAndMessageTail(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := agent.RunResult{Messages: []agent.Message{agent.NewAssistantMessage("second")}}
-	if err := store.CommitTurn(ctx, snapshot, "request-2", "run-2", "input-2", agent.NewUserMessage("two"), second); err != nil {
+	if err := store.CommitTurn(ctx, snapshot, "request-2", "run-2", "input-2", agent.NewUserMessage("two"), second, nil); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, _, err = store.Load(ctx, "session")
@@ -112,7 +112,7 @@ func TestPrepareContextCompactsAndPublishesPivot(t *testing.T) {
 			text = "latest turn"
 		}
 		result := agent.RunResult{Messages: []agent.Message{agent.NewAssistantMessage(text)}}
-		if err := store.CommitTurn(ctx, snapshot, "request-"+string(rune('1'+revision)), "run-"+string(rune('1'+revision)), "input", agent.NewUserMessage(text), result); err != nil {
+		if err := store.CommitTurn(ctx, snapshot, "request-"+string(rune('1'+revision)), "run-"+string(rune('1'+revision)), "input", agent.NewUserMessage(text), result, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

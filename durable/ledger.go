@@ -103,15 +103,18 @@ func newEffectRecord(snapshot Snapshot, request PrepareEffectRequest) (EffectRec
 		StepNumber: request.StepNumber, Ordinal: request.Ordinal, ToolCall: request.ToolCall,
 		Status: EffectPrepared, PreparedAt: request.PreparedAt,
 	}
+	// The digest covers identity only. AttemptKey and PreparedAt record which
+	// attempt first prepared this effect and when, which is provenance: a resumed
+	// attempt re-preparing the same call must recognize it rather than report a
+	// conflict, and it can only do that if the identity excludes who is asking.
 	digestValue := struct {
 		ExecutionKey ExecutionKey   `json:"execution_key"`
 		RunKey       RunKey         `json:"run_key"`
-		AttemptKey   AttemptKey     `json:"attempt_key"`
 		StepNumber   int            `json:"step_number"`
 		Ordinal      int            `json:"ordinal"`
 		ToolCall     agent.ToolCall `json:"tool_call"`
 		InputDigest  string         `json:"input_digest"`
-	}{key, record.RunKey, record.AttemptKey, record.StepNumber, record.Ordinal, record.ToolCall, inputDigest}
+	}{key, record.RunKey, record.StepNumber, record.Ordinal, record.ToolCall, inputDigest}
 	record.Digest, err = CanonicalDigest(digestValue)
 	return record, err
 }
@@ -129,10 +132,15 @@ func cloneEffect(record EffectRecord) EffectRecord {
 	return cloned
 }
 
+// samePreparedEffect compares the identity a re-preparation must not change.
+// Lifecycle fields and provenance are cleared first, because PrepareEffect is
+// called again by every attempt that resumes an open tool batch.
 func samePreparedEffect(left, right EffectRecord) bool {
 	left.Status, right.Status = EffectPrepared, EffectPrepared
 	left.FenceToken, right.FenceToken = 0, 0
 	left.Result, right.Result, left.Failure, right.Failure = nil, nil, nil, nil
+	left.AttemptKey, right.AttemptKey = "", ""
+	left.PreparedAt, right.PreparedAt = time.Time{}, time.Time{}
 	left.StartedAt, right.StartedAt, left.FinishedAt, right.FinishedAt = time.Time{}, time.Time{}, time.Time{}, time.Time{}
 	return reflect.DeepEqual(left, right)
 }

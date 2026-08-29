@@ -26,6 +26,22 @@ type Tool interface {
 }
 ```
 
+Writing a `Model` adapter has one rule that is easy to trip over: **the streamed chunks must add up to exactly the terminal response** — concatenated text deltas must equal the final message byte for byte, and tool calls must match too. The runtime will not hide an adapter that streams one answer and then reports another.
+
+The catch is that the most natural minimal implementation — emit only the terminal chunk, no deltas — violates it. So an adapter that already holds the whole answer should use `agent.StreamResponse`:
+
+```go
+func (m myModel) Stream(ctx context.Context, req *agent.GenerateRequest) (<-chan agent.StreamChunk, error) {
+	response, err := m.callUpstream(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return agent.StreamResponse(response), nil
+}
+```
+
+Non-streaming endpoints, cached replies, and test fakes all fall into that category. An adapter that genuinely streams token by token emits its own deltas and finishes with one `ChunkFinish`.
+
 The executor is `Agent`: assemble once with `agent.New(config, model, registry)`, then call `Run` concurrently and repeatedly. `Agent` itself does not keep session history, read environment variables, or connect to databases—those belong to your application.
 
 Around these two ports, the root package includes everything the loop needs: JSON Schema validation, tool allowlists, max steps, stop conditions, context budget, loop detection, and feeding invalid args back for repair (tool repair).
@@ -132,21 +148,106 @@ Tool errors come in two kinds with different semantics:
 - `ToolResult{IsError: true}`: model-visible, correctable business errors (e.g. "order not found"); the loop continues;
 - non-nil Go error from `Execute`: infrastructure failure; abort this run immediately.
 
-### Observe run progress
+### Persisting a conversation
 
-`ObservationEmitter` exposes text deltas, tool start/end, and step completion for live UI:
+The runtime is stateless: it stores nothing, and `RunResult.Messages` contains **only what this turn produced**. Multi-turn conversation is your application joining those turns together:
 
 ```go
-emitter := agent.NewObservationEmitter(64, func(o agent.Observation) {
-	if o.Type == agent.ObservationTextDelta {
-		fmt.Print(o.Text)
-	}
-})
+// One turn's input = system + stored history + this turn's user message
+messages := append([]agent.Message{systemMessage}, stored...)
+messages = append(messages, agent.NewUserMessage(input))
+
+result, err := runner.Run(ctx, agent.RunRequest{Messages: messages})
+if err != nil {
+	return err
+}
+// Commit only a turn that actually finished
+if result.Outcome == agent.OutcomeCompleted {
+	stored = append(stored, agent.NewUserMessage(input))
+	stored = append(stored, result.Messages...)
+}
+```
+
+Two things are easy to get wrong:
+
+- **You store the user message; it is not in `RunResult.Messages`.** That is deliberate: only the application knows whether a turn that failed halfway should be kept.
+- **Do not commit a turn that did not complete.** Its tool calls have no results yet, so writing it to history makes the next turn's input incoherent.
+
+Where it is stored is your decision — an in-memory slice, your own tables, or the `message` subpackage (which adds revision CAS and branch visibility). The runtime does not care; it takes a `[]agent.Message`.
+
+A complete runnable example is [`examples/chat`](https://github.com/iceymoss/agent-runtime-go/blob/main/examples/chat/main.go).
+
+### Constrain the model's own output
+
+When the answer is parsed by code rather than read by a person — extraction, classification, routing, filling a form — prompting alone is not enough: one stray sentence around the JSON turns a working run into a parse error the runtime cannot repair. `ResponseFormat` asks the provider to enforce the shape:
+
+```go
+runner, err := agent.New(agent.Config{
+	Key: "extract", ModelName: "gpt-4o-mini", MaxSteps: 4,
+	ResponseFormat: &agent.ResponseFormat{
+		Kind:   agent.ResponseFormatJSONSchema,
+		Name:   "invoice",
+		Schema: json.RawMessage(`{"type":"object","properties":{"total":{"type":"number"}}}`),
+		Strict: true,
+	},
+}, model, registry)
+```
+
+`ResponseFormatJSON` only requires valid JSON and is supported more widely; `ResponseFormatJSONSchema` requires output conforming to the schema. `RunRequest.ResponseFormat` overrides per call, so one agent can chat normally and constrain its output only where a caller needs machine-readable data.
+
+If the model does not declare `Capabilities.StructuredOutput`, `agent.New` returns `ErrAgentConfigInvalid` — assembly-time failure rather than a surprise halfway through. **The runtime does not validate the model's output against the schema**; enforcement belongs to the provider, so an application that must be certain still parses and checks what it received.
+
+### Reasoning models
+
+Reasoning models (DeepSeek-R1, Qwen3-thinking, the o-series) report their thinking separately from their answer. The runtime carries it as `PartReasoning`:
+
+```go
+result, _ := runner.Run(ctx, agent.RunRequest{Messages: msgs})
+answer := result.Text                      // the answer alone, no thinking
+thinking := result.Messages[0].Reasoning() // the chain of thought
+```
+
+While streaming it arrives as `ObservationReasoningDelta`, separate from text, so a UI can collapse, hide, or discard it without guessing which half of the stream it is looking at.
+
+Two rules are worth remembering:
+
+- `Message.Text()` excludes reasoning, so `RunResult.Text` is always the clean answer.
+- **Adapters do not send reasoning back to the model.** Providers that emit it reject it as assistant input, and replaying a chain of thought as conversation changes the question being answered. History keeps it for display and audit.
+
+A model that produces reasoning without declaring `Capabilities.Reasoning` is a protocol error — the application has to decide whether to render or redact it before the first token arrives.
+
+### Observe run progress
+
+`ObservationEmitter` exposes text deltas, tool start/end, and step completion for live UI.
+
+**The default is bounded, non-blocking, and lossy**: an observation that finds the queue full is dropped and counted, so delivery can never hold up model or tool progress. That is the right trade for progress telemetry and the wrong one for text a person is reading — any consumer slower than the model (SSE, WebSockets, and slow clients all qualify) loses deltas silently, and the reader sees a truncated answer while `RunResult.Text` stays complete.
+
+So distinguish the two uses:
+
+```go
+// Telemetry: losing some is fine, but the loss must be detectable.
+emitter := agent.NewObservationEmitter(64, recordProgress)
+defer emitter.Close()
+// ... after the run
+if emitter.Dropped() > 0 { /* the observations are incomplete */ }
+```
+
+```go
+// Text delivered to a reader: nothing may be lost.
+emitter := agent.NewObservationEmitterWith(
+	agent.ObservationOptions{QueueSize: 64, Lossless: true},
+	func(o agent.Observation) {
+		if o.Type == agent.ObservationTextDelta {
+			fmt.Print(o.Text)
+		}
+	})
 defer emitter.Close()
 result, err := runner.Run(ctx, agent.RunRequest{Messages: msgs, ObservationEmitter: emitter})
 ```
 
-It is a bounded, non-blocking, droppable progress signal—authoritative results come from `RunResult` only. For reliable event delivery use the [event subpackage](event.md).
+`Lossless` has a real cost: a consumer slower than the model now slows the run, so keep `consume` cheap (hand the observation to a buffered writer; do not perform the network write inline). Waiting is bounded by the run's context, so a cancelled run never blocks on a consumer that stopped reading.
+
+In either mode authoritative results come from `RunResult` only — `Observation` is not an event log. For reliable event delivery use the [event subpackage](event.md).
 
 ## FAQ
 

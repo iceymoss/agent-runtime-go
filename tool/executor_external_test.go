@@ -77,6 +77,29 @@ func (m *memoryLedger) Begin(_ context.Context, key string, fence uint64) (lifec
 	m.records[key] = record
 	return cloneTestRecord(record), nil
 }
+func (m *memoryLedger) Suspend(_ context.Context, command lifecycle.SuspendExecution) (lifecycle.ExecutionRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	record := m.records[command.ExecutionKey]
+	if record.Status != lifecycle.StatusRunning || record.FenceToken != command.FenceToken {
+		return lifecycle.ExecutionRecord{}, lifecycle.ErrStaleFence
+	}
+	suspension := command.Suspension
+	record.Status, record.Suspension, record.Revision = lifecycle.StatusSuspended, &suspension, record.Revision+1
+	m.records[command.ExecutionKey] = cloneTestRecord(record)
+	return cloneTestRecord(record), nil
+}
+func (m *memoryLedger) Resume(_ context.Context, key string, fence uint64) (lifecycle.ExecutionRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	record := m.records[key]
+	if record.Status != lifecycle.StatusSuspended || record.FenceToken != fence {
+		return lifecycle.ExecutionRecord{}, lifecycle.ErrStaleFence
+	}
+	record.Status, record.Revision = lifecycle.StatusRunning, record.Revision+1
+	m.records[key] = cloneTestRecord(record)
+	return cloneTestRecord(record), nil
+}
 func (m *memoryLedger) Reject(_ context.Context, key string, fence uint64, failure lifecycle.Failure) (lifecycle.ExecutionRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -132,6 +155,10 @@ func cloneTestRecord(record lifecycle.ExecutionRecord) lifecycle.ExecutionRecord
 	if record.Failure != nil {
 		failure := *record.Failure
 		record.Failure = &failure
+	}
+	if record.Suspension != nil {
+		suspension := *record.Suspension
+		record.Suspension = &suspension
 	}
 	return record
 }

@@ -1,0 +1,13 @@
+- 根包 `agent` 是可移植内核。`Agent.Run` 的语义变更等同破坏性变更，动手前先与用户确认
+- `Outcome`（`completed`/`suspended`/`failed`）与 `StopReason` 是正交的两个字段，必须同时正确设置：非 nil error 一律 `failed`；达到 `MaxSteps` 时模型仍在调工具**不是错误**，返回 `suspended` + `max_steps`
+- 只有 `FinishStop` 且没有 tool call 才算真正的最终答案；`FinishLength` 是 `suspended` + `output_limit`
+- `RunResult.Messages` 只包含本次 run 新增的 assistant/tool 消息，交给应用持久化；不要把入参 history 回填进去
+- `ToolResult{IsError: true}` 是模型可见、可自行改正的错误；返回非 nil Go error 表示终止本次 attempt 并保留原始 cause。两者语义不同，不要互相替代
+- `AllowedTools == nil` 表示放开全部已注册工具，`[]string{}` 表示显式禁用工具。不要把两者归一化处理
+- 配置问题在装配期失败：`MaxSteps <= 0`、`LoopDetectWindow > MaxSteps`、`ToolChoice` 与 `Capabilities` 不符等一律在 `New()` 返回 `ErrAgentConfigInvalid`，不要推迟到 `Run`
+- 新增任何停止路径都要：设置 `StopReason` + `Outcome`、emit `ObservationStepFinished`、在 `audit_regression_test.go` 补一条回归用例
+- Observation 是有界、非阻塞、**可丢失**的，不是权威事件日志。不要用它承载正确性，终态只看 `RunResult` 和 error
+- 改 `Checkpoint` / `RunSnapshot` 字段时必须同步 `Clone()`、`ValidateRunTransition`、以及 digest 计算；快照结构变更要走 `ErrUnsupportedRunSnapshotSchema` 而不是静默兼容
+- durable 执行不保证外部副作用 exactly-once，去重锚点是稳定的 `ToolExecutionKey`；不要改它的构成规则，下游系统依赖它
+- prompt、skills、模型输出都**不是**权限边界。真正的权限校验必须落在 tool 实现和应用适配层
+- 上下文预算和循环检测只负责"检测并中断"（`ContextBudgetExceeded`、`LoopDetector`），运行时自己不做历史压缩；压缩策略属于 `context` 子包和调用方

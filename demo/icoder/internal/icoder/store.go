@@ -11,6 +11,7 @@ import (
 
 	"github.com/iceymoss/agent-runtime-go"
 	agentcontext "github.com/iceymoss/agent-runtime-go/context"
+	"github.com/iceymoss/agent-runtime-go/durable"
 	"github.com/iceymoss/agent-runtime-go/event"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -166,6 +167,17 @@ func (s *Store) migrate() error {
 			FOREIGN KEY (session_id) REFERENCES icoder_sessions(id) ON DELETE CASCADE
 		)`,
 	}
+	// The durable run authority owns its own tables; keeping the DDL beside the
+	// adapter keeps schema and behavior from drifting apart.
+	statements = append(statements, durableMigrations...)
+	statements = append(statements, toolLedgerMigrations...)
+	statements = append(statements, permissionMigrations...)
+	statements = append(statements, delegationMigrations...)
+	statements = append(statements, subagentMigrations...)
+	statements = append(statements, manifestMigrations...)
+	statements = append(statements, messageMigrations...)
+	statements = append(statements, sessionMigrations...)
+	statements = append(statements, sessionRunMigrations...)
 	for _, statement := range statements {
 		if _, err := s.db.Exec(statement); err != nil {
 			return fmt.Errorf("migrate icoder store: %w", err)
@@ -337,7 +349,12 @@ func (s *Store) Load(ctx context.Context, sessionID string) (snapshot SessionSna
 	return snapshot, messages, rows.Err()
 }
 
-func (s *Store) CommitTurn(ctx context.Context, snapshot SessionSnapshot, requestID, runID, inputDigest string, user agent.Message, result agent.RunResult) (resultErr error) {
+// CommitTurn atomically publishes one finished turn: its messages, the session
+// revision and usage, the idempotency record, the reliable completion event, the
+// refreshed task state, and - when the run was durable - the run's terminal
+// state. They commit together so a crash can never leave the conversation and
+// the recovery record disagreeing about whether the turn happened.
+func (s *Store) CommitTurn(ctx context.Context, snapshot SessionSnapshot, requestID, runID, inputDigest string, user agent.Message, result agent.RunResult, completion *agent.DurableCompletion) (resultErr error) {
 	resultPayload, err := marshalString(result)
 	if err != nil {
 		return err
@@ -411,6 +428,17 @@ func (s *Store) CommitTurn(ctx context.Context, snapshot SessionSnapshot, reques
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO icoder_task_state(session_id, payload, updated_at) VALUES(?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`, snapshot.ID, taskPayload, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
+	}
+	if completion != nil {
+		guard := durable.Guard{
+			RunKey: durable.RunKey(completion.Guard.RunKey), LeaseOwner: completion.Guard.LeaseOwner,
+			Revision: completion.Guard.Revision, FenceToken: completion.Guard.FenceToken,
+		}
+		if _, err := saveInTx(ctx, tx, durable.SaveRequest{
+			Guard: guard, Status: durable.StatusCompleted, Phase: durable.PhaseTerminal, Checkpoint: completion.Checkpoint,
+		}); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

@@ -22,6 +22,7 @@ The runtime executes the model/tool loop reliably; your application owns model a
 - Unified contracts for messages, images, models, streamed responses, and usage
 - Multi-step model/tool loop with JSON Schema validation and tool allowlists
 - Max steps, stop conditions, context budgets, and tool loop detection
+- Lossy progress observations by default, with a lossless mode for text streamed to a reader
 - Optional Session, Durable, Permission, Event, MCP, Skills, and Sub-Agent packages
 - Immutable runtime definitions and reproducible artifact digests
 - Testable provider/tool ports with no coupling to OpenAI, Anthropic, or any database
@@ -83,7 +84,21 @@ type Model interface {
 }
 ```
 
-A provider adapter projects `GenerateRequest` into the upstream protocol and converts upstream responses into canonical `StreamChunk` values. See [`examples/hello`](examples/hello/main.go) for a complete minimal implementation.
+A provider adapter projects `GenerateRequest` into the upstream protocol and converts upstream responses into canonical `StreamChunk` values.
+
+The runtime requires the streamed chunks to add up to exactly the terminal response, so an adapter that already holds the whole answer — a non-streaming endpoint, a cached reply, a test fake — should return `agent.StreamResponse(response)` rather than assemble chunks by hand:
+
+```go
+func (m myModel) Stream(ctx context.Context, req *agent.GenerateRequest) (<-chan agent.StreamChunk, error) {
+	response, err := m.callUpstream(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return agent.StreamResponse(response), nil
+}
+```
+
+An adapter that genuinely streams emits its own deltas and finishes with one `ChunkFinish` whose response matches them. See [`examples/hello`](examples/hello/main.go) for a complete minimal implementation.
 
 ## Connecting a real model
 
@@ -238,6 +253,7 @@ Import only what your current requirements need.
 |---|---|
 | One model/tool loop | root package `agent` |
 | OpenAI-compatible model integration | `providers/openaicompat` |
+| Retrying transient provider failures | `providers/retry` |
 | Multi-model catalog and factory | `provider` |
 | Prompt templates and versions | `prompt` |
 | History normalization and token budgets | `context` |
@@ -292,6 +308,7 @@ See [runtime internals](docs/internals.md) for detailed execution semantics.
 |---|---|
 | [`examples/hello`](examples/hello/main.go) | Minimal model adapter and one run |
 | [`examples/tool-agent`](examples/tool-agent/main.go) | Complete model/tool loop with a facade |
+| [`examples/chat`](examples/chat/main.go) | Multi-turn conversation: carrying history, storing a turn, a tool that reads app state |
 | [`examples/openai-compat`](examples/openai-compat/main.go) | Official adapter with a real model, `NewTool`, and streaming output |
 | [`demo/icoder`](demo/icoder/README.md) | Provider, tools, permissions, sessions, SQLite, Skills, MCP, and Sub-Agent composed together |
 

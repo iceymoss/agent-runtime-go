@@ -26,6 +26,22 @@ type Tool interface {
 }
 ```
 
+写 `Model` 适配器时有一条容易踩的规则：**流式分片累加后必须严格等于终态 response**——文本增量拼起来要逐字等于最终消息，工具调用也要一致。运行时不会掩盖"流出来一个答案、终态却报另一个"的适配器 bug。
+
+问题在于最自然的最小实现（只发一个终态 chunk、不发任何增量）恰好违反它。所以已经拿到完整回答的适配器直接用 `agent.StreamResponse`：
+
+```go
+func (m myModel) Stream(ctx context.Context, req *agent.GenerateRequest) (<-chan agent.StreamChunk, error) {
+	response, err := m.callUpstream(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return agent.StreamResponse(response), nil
+}
+```
+
+非流式端点、缓存回复、测试 fake 都属于这一类。真正逐 token 流式的适配器自己发增量，最后用一个 `ChunkFinish` 收尾即可。
+
 执行器是 `Agent`：用 `agent.New(config, model, registry)` 装配一次，之后并发安全地反复调用 `Run`。`Agent` 自身不保存会话历史、不读环境变量、不连数据库——这些都属于你的应用。
 
 围绕这两个端口，根包内置了循环执行所需的全部机制：JSON Schema 校验、工具白名单、最大步数、停止条件、上下文预算、循环检测、非法参数回灌修正（tool repair）。
@@ -132,21 +148,106 @@ tool := agent.MustNewTool("find_order", "按订单号查询订单", handler)
 - `ToolResult{IsError: true}`：模型可见、可修正的业务错误（如"订单不存在"），循环继续；
 - `Execute` 返回非 nil Go error：基础设施故障，立即中止本次运行。
 
-### 观察运行进度
+### 持久化一段对话
 
-`ObservationEmitter` 提供文本增量、工具开始/结束、步骤完成四类信号，用于 UI 实时展示：
+运行时是无状态的：它什么都不存，`RunResult.Messages` 里**只有本轮新产生的** assistant/tool 消息。多轮对话由你的应用把历史接起来：
 
 ```go
-emitter := agent.NewObservationEmitter(64, func(o agent.Observation) {
-	if o.Type == agent.ObservationTextDelta {
-		fmt.Print(o.Text)
-	}
-})
+// 每轮的输入 = system + 已存历史 + 本轮 user message
+messages := append([]agent.Message{systemMessage}, stored...)
+messages = append(messages, agent.NewUserMessage(input))
+
+result, err := runner.Run(ctx, agent.RunRequest{Messages: messages})
+if err != nil {
+	return err
+}
+// 只在这一轮真正完成时提交
+if result.Outcome == agent.OutcomeCompleted {
+	stored = append(stored, agent.NewUserMessage(input))
+	stored = append(stored, result.Messages...)
+}
+```
+
+两个容易踩的点：
+
+- **user message 由你保存，不在 `RunResult.Messages` 里**。这是有意的：只有应用知道一轮半途失败的对话该不该留下。
+- **没完成的轮次不要提交**。它的 tool call 还没有对应结果，写进历史会让下一轮的输入不合法。
+
+存到哪里由你决定——内存切片、你自己的表、或者 `message` 子包（带 revision CAS 和分支可见性）。运行时不关心，它只接收 `[]agent.Message`。
+
+完整可运行的例子见 [`examples/chat`](https://github.com/iceymoss/agent-runtime-go/blob/main/examples/chat/main.go)。
+
+### 让模型按结构输出
+
+答案要交给代码解析而不是给人读时——抽取、分类、路由、填表——只靠 prompt 约束不够：JSON 外面多一句话就把一次成功的运行变成解析错误，而运行时无法修复它。用 `ResponseFormat` 让供应商去强制：
+
+```go
+runner, err := agent.New(agent.Config{
+	Key: "extract", ModelName: "gpt-4o-mini", MaxSteps: 4,
+	ResponseFormat: &agent.ResponseFormat{
+		Kind:   agent.ResponseFormatJSONSchema,
+		Name:   "invoice",
+		Schema: json.RawMessage(`{"type":"object","properties":{"total":{"type":"number"}}}`),
+		Strict: true,
+	},
+}, model, registry)
+```
+
+`ResponseFormatJSON` 只要求合法 JSON，兼容面更广；`ResponseFormatJSONSchema` 要求符合给定 schema。`RunRequest.ResponseFormat` 可以按次覆盖，所以同一个 Agent 平时正常对话、只在需要机器可读的那一次约束输出。
+
+模型没声明 `Capabilities.StructuredOutput` 时，`agent.New` 直接返回 `ErrAgentConfigInvalid`——装配期失败，而不是跑到一半才发现。**运行时不校验模型输出是否符合 schema**，强制是供应商的职责；真正要确定的应用仍然要自己解析和检查。
+
+### 推理模型的思维链
+
+推理模型（DeepSeek-R1、Qwen3-thinking、o 系列等）会把思考过程和答案分开返回。运行时用 `PartReasoning` 承载它：
+
+```go
+result, _ := runner.Run(ctx, agent.RunRequest{Messages: msgs})
+answer := result.Text                     // 只有答案，不含思考
+thinking := result.Messages[0].Reasoning() // 思考过程
+```
+
+流式时通过 `ObservationReasoningDelta` 单独下发，UI 可以折叠、隐藏或直接丢弃，不用去猜自己拿到的是哪半边。
+
+两条规则值得记住：
+
+- `Message.Text()` 不包含 reasoning，所以 `RunResult.Text` 永远是干净的答案；
+- **适配器不会把 reasoning 回传给模型**。产生 reasoning 的供应商基本都会拒绝把它当 assistant 输入，而且把思维链当对话重放会改变模型在回答的问题。历史里保留它是为了展示和审计。
+
+模型产出 reasoning 但没声明 `Capabilities.Reasoning` 会被判为协议错误——应用需要在第一个 token 到达之前就知道要不要渲染或脱敏。
+
+### 观察运行进度
+
+`ObservationEmitter` 提供文本增量、工具开始/结束、步骤完成四类信号，用于 UI 实时展示。
+
+**默认是有界、非阻塞、可丢失的**：队列满时观察值被丢弃并计数，绝不阻塞模型和工具的推进。这对进度遥测是对的取舍，对"人正在读的文本"是错的——消费者只要比模型慢（SSE、WebSocket、慢客户端都会），增量就会被静默丢掉，读者看到一个被截断的回答，而 `RunResult.Text` 是完整的。
+
+所以要区分两种用途：
+
+```go
+// 遥测：丢一点无所谓，但要能发现丢了
+emitter := agent.NewObservationEmitter(64, recordProgress)
+defer emitter.Close()
+// ... 运行之后
+if emitter.Dropped() > 0 { /* 观察值不完整 */ }
+```
+
+```go
+// 交付给人看的文本：不能丢
+emitter := agent.NewObservationEmitterWith(
+	agent.ObservationOptions{QueueSize: 64, Lossless: true},
+	func(o agent.Observation) {
+		if o.Type == agent.ObservationTextDelta {
+			fmt.Print(o.Text)
+		}
+	})
 defer emitter.Close()
 result, err := runner.Run(ctx, agent.RunRequest{Messages: msgs, ObservationEmitter: emitter})
 ```
 
-注意它是有界、非阻塞、可丢失的进度信号——权威结果只看 `RunResult`。需要可靠的事件投递用 [event 子包](event.md)。
+`Lossless` 的代价是真实的：比模型慢的消费者会拖慢这次运行，所以 `consume` 要保持廉价（把观察值交给带缓冲的 writer，不要在里面直接做网络写）。等待受本次运行的 context 约束，运行被取消时不会卡在停止读取的消费者上。
+
+无论哪种模式，权威结果只看 `RunResult`——`Observation` 不是事件日志。需要可靠的事件投递用 [event 子包](event.md)。
 
 ## 常见问题
 

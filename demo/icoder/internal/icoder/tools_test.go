@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/iceymoss/agent-runtime-go"
 	"github.com/iceymoss/agent-runtime-go/permission"
+	toollifecycle "github.com/iceymoss/agent-runtime-go/tool"
 )
 
 type fixedTool struct{ calls int }
@@ -23,156 +25,234 @@ func (t *fixedTool) Execute(context.Context, agent.ToolInvocation) (agent.ToolRe
 	return agent.ToolResult{Content: "written"}, nil
 }
 
-func TestAuthorizedToolDeniesWhenApprovalUnavailable(t *testing.T) {
-	service, err := NewPermissionService(false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inner := &fixedTool{}
-	tool := &authorizedTool{tool: inner, permission: service, action: "workspace.write", sessionID: func() string { return "session" }, resource: func(string) permission.Resource {
-		return permission.Resource{Kind: "workspace", Key: "file.go"}
-	}}
-	result, err := tool.Execute(context.Background(), agent.ToolInvocation{CallID: "call-1", Name: "write_file", RawInput: `{}`})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.IsError || !result.StopTurn || !strings.Contains(result.Content, "approval is unavailable") || inner.calls != 0 {
-		t.Fatalf("result = %#v, calls = %d", result, inner.calls)
-	}
-}
-
-func TestUnknownMCPToolRequiresApproval(t *testing.T) {
-	service, err := NewPermissionService(false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inner := &fixedTool{}
-	tool := &authorizedTool{tool: inner, permission: service, action: "network.tool", sessionID: func() string { return "session" }, resource: func(string) permission.Resource {
-		return permission.Resource{Kind: "mcp-tool", Key: "server/tool"}
-	}}
-	result, err := tool.Execute(context.Background(), agent.ToolInvocation{CallID: "mcp-call", Name: "mcp_server_tool", RawInput: `{}`})
-	if err != nil || !result.IsError || !result.StopTurn || inner.calls != 0 || !strings.Contains(result.Content, "approval is unavailable") {
-		t.Fatalf("result = %#v, calls = %d, error = %v", result, inner.calls, err)
-	}
-}
-
-func TestAuthorizedToolExecutesAfterApproval(t *testing.T) {
-	service, err := NewPermissionService(false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inner := &fixedTool{}
-	tool := &authorizedTool{tool: inner, permission: service, action: "workspace.write", sessionID: func() string { return "session" }, resource: func(string) permission.Resource { return permission.Resource{Kind: "file", Key: "file.go"} }}
-	var prompt ApprovalPrompt
-	ctx := withRunContext(context.Background(), "run-1", "session", func(_ context.Context, value ApprovalPrompt) (ApprovalDecision, error) {
-		prompt = value
-		return ApprovalApproveOnce, nil
-	}, nil)
-	result, err := tool.Execute(ctx, agent.ToolInvocation{CallID: "call-1", Name: "write_file", RawInput: `{"path":"file.go"}`})
-	if err != nil || result.Content != "written" || inner.calls != 1 {
-		t.Fatalf("result = %#v, calls = %d, error = %v", result, inner.calls, err)
-	}
-	if prompt.ToolName != "write_file" || prompt.Resource != "file.go" || !strings.Contains(prompt.Input, "file.go") {
-		t.Fatalf("prompt = %#v", prompt)
-	}
-}
-
-func TestAuthorizedToolExecutesAfterAutoApproval(t *testing.T) {
-	service, err := NewPermissionService(false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inner := &fixedTool{}
-	tool := &authorizedTool{tool: inner, permission: service, action: "workspace.write", sessionID: func() string { return "session" }, resource: func(string) permission.Resource { return permission.Resource{Kind: "file", Key: "file.go"} }}
-	ctx := withRunContext(context.Background(), "run-auto", "session", func(context.Context, ApprovalPrompt) (ApprovalDecision, error) { return ApprovalApproveAuto, nil }, nil)
-	result, err := tool.Execute(ctx, agent.ToolInvocation{CallID: "call-1", Name: "write_file", RawInput: `{}`})
-	if err != nil || result.Content != "written" || inner.calls != 1 {
-		t.Fatalf("result=%#v calls=%d error=%v", result, inner.calls, err)
-	}
-}
-
-func TestAuthorizedToolDoesNotExecuteAfterRejection(t *testing.T) {
-	service, err := NewPermissionService(false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inner := &fixedTool{}
-	tool := &authorizedTool{tool: inner, permission: service, action: "workspace.write", sessionID: func() string { return "session" }, resource: func(string) permission.Resource { return permission.Resource{Kind: "file", Key: "file.go"} }}
-	ctx := withRunContext(context.Background(), "run-2", "session", func(context.Context, ApprovalPrompt) (ApprovalDecision, error) { return ApprovalDeny, nil }, nil)
-	result, err := tool.Execute(ctx, agent.ToolInvocation{CallID: "call-1", Name: "write_file", RawInput: `{}`})
-	if err != nil || !result.IsError || !result.StopTurn || inner.calls != 0 {
-		t.Fatalf("result = %#v, calls = %d, error = %v", result, inner.calls, err)
-	}
-}
-
-func TestAuthorizedToolReturnsActionableResultWhenApprovalExpires(t *testing.T) {
-	clock := &toolTestClock{now: time.Date(2026, 8, 7, 8, 0, 0, 0, time.UTC)}
-	policy := permission.PolicyFunc{PolicyVersion: policyVersion, EvaluateFunc: func(_ context.Context, request permission.CheckRequest, _ []permission.Grant) (permission.CheckResult, error) {
-		return permission.CheckResult{Decision: permission.DecisionAsk, PolicyVersion: request.PolicyVersion, InputDigest: request.InputDigest}, nil
-	}}
-	service, err := permission.NewService(permission.ServiceOptions{Policy: policy, Store: permission.NewMemoryStore(clock), Clock: clock})
-	if err != nil {
-		t.Fatal(err)
-	}
-	inner := &fixedTool{}
-	tool := &authorizedTool{tool: inner, permission: service, action: "workspace.write", sessionID: func() string { return "session" }, resource: func(string) permission.Resource { return permission.Resource{Kind: "file", Key: "file.go"} }, now: clock.Now, approvalTTL: time.Minute}
-	ctx := withRunContext(context.Background(), "run-expired", "session", func(_ context.Context, prompt ApprovalPrompt) (ApprovalDecision, error) {
-		if !prompt.ExpiresAt.Equal(clock.now.Add(time.Minute)) {
-			t.Fatalf("ExpiresAt = %v", prompt.ExpiresAt)
-		}
-		clock.now = clock.now.Add(2 * time.Minute)
-		return ApprovalApproveOnce, nil
-	}, nil)
-	result, err := tool.Execute(ctx, agent.ToolInvocation{CallID: "call-1", Name: "write_file", RawInput: `{}`})
-	if err != nil || !result.IsError || !result.StopTurn || !strings.Contains(result.Content, "Approval expired") || inner.calls != 0 {
-		t.Fatalf("result=%#v error=%v calls=%d", result, err, inner.calls)
-	}
-}
-
-func TestApprovalTerminalResultRejectsInfrastructureErrors(t *testing.T) {
-	if _, ok := approvalTerminalResult(errors.New("database unavailable")); ok {
-		t.Fatal("infrastructure error was converted to a tool result")
-	}
-}
-
 type toolTestClock struct{ now time.Time }
 
 func (c *toolTestClock) Now() time.Time { return c.now }
 
-func TestAuthorizedToolAllowsWriteFlag(t *testing.T) {
-	service, err := NewPermissionService(true)
+// newTestCatalog builds a real frozen generation over a real SQLite execution
+// ledger, so these tests exercise the same path the application does rather than
+// a simplified stand-in.
+func newTestCatalog(t *testing.T, gate *PermissionGate, entries []lifecycleEntry) *ToolCatalog {
+	t.Helper()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "icoder.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	catalog, err := NewToolCatalog(ToolCatalogOptions{Entries: entries, Permissions: gate, Ledger: store.ToolLedger()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return catalog
+}
+
+func writeEntry(tool agent.Tool) []lifecycleEntry {
+	return []lifecycleEntry{{tool: tool, metadata: writeMetadata("workspace.write", "workspace.file"), resource: permission.Resource{Kind: "file", Key: "file.go"}}}
+}
+
+// testRunContext supplies the run identity the executor requires. Tools are
+// always invoked inside a run, so a test that omits it would not be testing the
+// real path.
+func testRunContext(ctx context.Context, runKey, session string, approve ApprovalFunc) context.Context {
+	return withRunContext(ctx, runContext{id: runKey, attempt: runKey + ":attempt", session: session, approve: approve})
+}
+
+func executeCatalogTool(t *testing.T, ctx context.Context, catalog *ToolCatalog, invocation agent.ToolInvocation) (agent.ToolResult, error) {
+	t.Helper()
+	tool, ok := catalog.Registry().Get(invocation.Name)
+	if !ok {
+		t.Fatalf("tool %q is not in the frozen generation", invocation.Name)
+	}
+	return tool.Execute(ctx, invocation)
+}
+
+func newTestGate(t *testing.T, allowWrites bool) *PermissionGate {
+	t.Helper()
+	gate, err := NewPermissionGate(allowWrites, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return gate
+}
+
+func TestToolSuspendsWhenNobodyCanApprove(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []lifecycleEntry
+		call    agent.ToolInvocation
+	}{
+		{
+			name:    "workspace write",
+			entries: writeEntry(&fixedTool{}),
+			call:    agent.ToolInvocation{CallID: "call-1", Name: "write_file", RawInput: `{}`},
+		},
+		{
+			name: "unclassified MCP tool",
+			entries: []lifecycleEntry{{
+				tool:     &fixedTool{},
+				metadata: externalMetadata("network.tool", "mcp.server", false),
+				resource: permission.Resource{Kind: "mcp-tool", Key: "server/tool"},
+			}},
+			call: agent.ToolInvocation{CallID: "mcp-call", Name: "write_file", RawInput: `{}`},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			inner := test.entries[0].tool.(*fixedTool)
+			catalog := newTestCatalog(t, newTestGate(t, false), test.entries)
+			ctx := testRunContext(context.Background(), "run-1", "session", nil)
+			_, err := executeCatalogTool(t, ctx, catalog, test.call)
+			suspension, ok := agent.AsToolSuspension(err)
+			if !ok {
+				t.Fatalf("error = %v, want a tool suspension", err)
+			}
+			if suspension.Kind != agent.ToolSuspensionApproval || suspension.ExecutionKey == "" || suspension.ResumeToken == "" {
+				t.Fatalf("suspension = %#v", suspension)
+			}
+			if inner.calls != 0 {
+				t.Fatalf("tool ran %d times before approval", inner.calls)
+			}
+		})
+	}
+}
+
+func TestToolExecutesAfterApproval(t *testing.T) {
+	tests := []struct {
+		name     string
+		decision ApprovalDecision
+	}{
+		{name: "approve once", decision: ApprovalApproveOnce},
+		{name: "approve for the session", decision: ApprovalApproveAuto},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			inner := &fixedTool{}
+			catalog := newTestCatalog(t, newTestGate(t, false), writeEntry(inner))
+			var prompt ApprovalPrompt
+			ctx := testRunContext(context.Background(), "run-1", "session", func(_ context.Context, value ApprovalPrompt) (ApprovalDecision, error) {
+				prompt = value
+				return test.decision, nil
+			})
+			result, err := executeCatalogTool(t, ctx, catalog, agent.ToolInvocation{CallID: "call-1", Name: "write_file", RawInput: `{"path":"file.go"}`})
+			if err != nil || result.Content != "written" || inner.calls != 1 {
+				t.Fatalf("result = %#v, calls = %d, error = %v", result, inner.calls, err)
+			}
+			if prompt.ToolName != "write_file" || prompt.Resource != "file.go" || !strings.Contains(prompt.Input, "file.go") {
+				t.Fatalf("prompt = %#v", prompt)
+			}
+		})
+	}
+}
+
+func TestToolDenialIsModelVisibleAndStopsTheTurn(t *testing.T) {
 	inner := &fixedTool{}
-	tool := &authorizedTool{tool: inner, permission: service, action: "workspace.write", sessionID: func() string { return "session" }, resource: func(string) permission.Resource {
-		return permission.Resource{Kind: "workspace", Key: "file.go"}
-	}}
-	result, err := tool.Execute(context.Background(), agent.ToolInvocation{CallID: "call-1", Name: "write_file", RawInput: `{}`})
+	catalog := newTestCatalog(t, newTestGate(t, false), writeEntry(inner))
+	ctx := testRunContext(context.Background(), "run-2", "session", func(context.Context, ApprovalPrompt) (ApprovalDecision, error) {
+		return ApprovalDeny, nil
+	})
+	result, err := executeCatalogTool(t, ctx, catalog, agent.ToolInvocation{CallID: "call-1", Name: "write_file", RawInput: `{}`})
+	if err != nil {
+		t.Fatalf("denial returned an error instead of a correctable result: %v", err)
+	}
+	if !result.IsError || !result.StopTurn || inner.calls != 0 {
+		t.Fatalf("result = %#v, calls = %d", result, inner.calls)
+	}
+}
+
+func TestToolAllowsWriteFlagWithoutPrompting(t *testing.T) {
+	inner := &fixedTool{}
+	catalog := newTestCatalog(t, newTestGate(t, true), writeEntry(inner))
+	ctx := testRunContext(context.Background(), "run-3", "session", func(context.Context, ApprovalPrompt) (ApprovalDecision, error) {
+		t.Fatal("approval was requested even though writes are pre-authorized")
+		return ApprovalDeny, nil
+	})
+	result, err := executeCatalogTool(t, ctx, catalog, agent.ToolInvocation{CallID: "call-1", Name: "write_file", RawInput: `{}`})
 	if err != nil || result.Content != "written" || inner.calls != 1 {
 		t.Fatalf("result = %#v, calls = %d, error = %v", result, inner.calls, err)
 	}
 }
 
-func TestAuthorizedToolUsesFrozenRunSession(t *testing.T) {
-	var checkedSession string
-	policy := permission.PolicyFunc{PolicyVersion: policyVersion, EvaluateFunc: func(_ context.Context, request permission.CheckRequest, _ []permission.Grant) (permission.CheckResult, error) {
-		checkedSession = request.SessionRef
-		return permission.CheckResult{Decision: permission.DecisionAllow, PolicyVersion: request.PolicyVersion, InputDigest: request.InputDigest}, nil
+func TestToolAuthorizationUsesTheFrozenRunSession(t *testing.T) {
+	// The UI can switch sessions mid-run. The authorization must still name the
+	// session that started the run, or an approval would be attributed elsewhere.
+	var sessions []string
+	gate := newTestGate(t, true)
+	original := gate.policy
+	gate.policy = permission.PolicyFunc{PolicyVersion: policyVersion, EvaluateFunc: func(ctx context.Context, request permission.CheckRequest, grants []permission.Grant) (permission.CheckResult, error) {
+		sessions = append(sessions, request.SessionRef)
+		return original.Evaluate(ctx, request, grants)
 	}}
-	service, err := permission.NewService(permission.ServiceOptions{Policy: policy, Store: permission.NewMemoryStore()})
+	catalog := newTestCatalog(t, gate, writeEntry(&fixedTool{}))
+	ctx := testRunContext(context.Background(), "run", "run-session", nil)
+	if _, err := executeCatalogTool(t, ctx, catalog, agent.ToolInvocation{CallID: "call", Name: "write_file", RawInput: `{}`}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) == 0 {
+		t.Fatal("policy was never consulted")
+	}
+	for _, session := range sessions {
+		if session != "run-session" {
+			t.Fatalf("permission session = %q, want the run session", session)
+		}
+	}
+}
+
+func TestApprovalTerminalMessageRejectsInfrastructureErrors(t *testing.T) {
+	if _, ok := approvalTerminalMessage(errors.New("database unavailable")); ok {
+		t.Fatal("infrastructure error was converted to a user-facing approval message")
+	}
+	if _, ok := approvalTerminalMessage(permission.ErrRequestExpired); !ok {
+		t.Fatal("expired approval was not recognized as terminal")
+	}
+}
+
+func TestPermissionGateEvaluateDoesNotCreatePendingRequests(t *testing.T) {
+	gate := newTestGate(t, false)
+	request := permission.CheckRequest{
+		RequestKey: "request", Subject: permission.Subject{TenantKey: tenantKey, PrincipalKey: principalKey},
+		Resource: permission.Resource{Kind: "file", Key: "file.go"}, SessionRef: "session",
+		RunRef: "run", AttemptRef: "attempt", ExecutionRef: "execution", ToolName: "write_file",
+		Action: "workspace.write", InputDigest: "sha256:input", PolicyVersion: policyVersion,
+	}
+	result, err := gate.Evaluate(context.Background(), request)
+	if err != nil || result.Decision != permission.DecisionAsk {
+		t.Fatalf("Evaluate() = %#v, error %v", result, err)
+	}
+	pending, err := gate.PendingApprovals(context.Background())
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("PendingApprovals() = %d, error %v; a dry run must not create requests", len(pending), err)
+	}
+}
+
+func TestToolCatalogFreezesMetadataIntoOneGeneration(t *testing.T) {
+	workspace, err := NewWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	inner := &fixedTool{}
-	tool := &authorizedTool{tool: inner, permission: service, action: "workspace.write", sessionID: func() string { return "ui-session" }, resource: func(string) permission.Resource { return permission.Resource{Kind: "file", Key: "file.go"} }}
-	ctx := withRunContext(context.Background(), "run", "run-session", nil, nil)
-	if _, err := tool.Execute(ctx, agent.ToolInvocation{CallID: "call", Name: "write_file", RawInput: `{}`}); err != nil {
-		t.Fatal(err)
+	catalog := newTestCatalog(t, newTestGate(t, false), workspaceToolEntries(workspace, nil))
+	if catalog.GenerationDigest() == "" {
+		t.Fatal("generation digest is empty")
 	}
-	if checkedSession != "run-session" {
-		t.Fatalf("permission session = %q", checkedSession)
+	names := catalog.Names()
+	if len(names) == 0 {
+		t.Fatal("no tools were bridged into the root registry")
 	}
+	for _, name := range []string{"read_file", "apply_patch", "run_command", "git_commit"} {
+		if _, ok := catalog.Registry().Get(name); !ok {
+			t.Fatalf("tool %q is missing from the bridged registry", name)
+		}
+	}
+	if _, ok := catalog.Registry().Get("get_weather"); ok {
+		t.Fatal("weather tool was registered without a provider")
+	}
+	if _, ok := any(catalog.Registry()).(*agent.Registry); !ok {
+		t.Fatal("catalog did not expose a root registry")
+	}
+	var _ toollifecycle.Metadata = readMetadata("workspace.read")
 }
 
 func TestValidateCommandAllowlist(t *testing.T) {
@@ -218,49 +298,43 @@ func TestRunCommandToolReturnsInvalidCWDAsToolError(t *testing.T) {
 	}
 }
 
-func TestGitCommitToolRequiresApproval(t *testing.T) {
+func TestWorkspaceWriteToolsRequireApproval(t *testing.T) {
+	// Every tool that changes the workspace must stop for a decision when no one
+	// can give it, rather than proceeding on the model's say-so.
+	tests := []struct {
+		name  string
+		call  agent.ToolInvocation
+		token string
+	}{
+		{name: "git_commit", call: agent.ToolInvocation{CallID: "commit", Name: "git_commit", RawInput: `{"message":"test: commit","paths":["file.go"]}`}},
+		{name: "apply_patch", call: agent.ToolInvocation{CallID: "patch", Name: "apply_patch", RawInput: `{"operations":[{"operation":"create","path":"new.txt","content":"new"}]}`}},
+		{name: "run_command", call: agent.ToolInvocation{CallID: "command", Name: "run_command", RawInput: `{"program":"go","args":["test","./..."]}`}},
+	}
 	workspace, err := NewWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewPermissionService(false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	registry := agent.NewRegistry()
-	if err := registerTools(registry, workspace, nil, service, func() string { return "session" }); err != nil {
-		t.Fatal(err)
-	}
-	tool, ok := registry.Get("git_commit")
-	if !ok {
-		t.Fatal("git_commit was not registered")
-	}
-	result, err := tool.Execute(context.Background(), agent.ToolInvocation{CallID: "commit", Name: "git_commit", RawInput: `{"message":"test: commit","paths":["file.go"]}`})
-	if err != nil || !result.IsError || !result.StopTurn || !strings.Contains(result.Content, "approval is unavailable") {
-		t.Fatalf("result=%#v error=%v", result, err)
+	catalog := newTestCatalog(t, newTestGate(t, false), workspaceToolEntries(workspace, nil))
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := testRunContext(context.Background(), "run-"+test.name, "session", nil)
+			_, err := executeCatalogTool(t, ctx, catalog, test.call)
+			if _, ok := agent.AsToolSuspension(err); !ok {
+				t.Fatalf("error = %v, want a tool suspension awaiting approval", err)
+			}
+		})
 	}
 }
 
-func TestApplyPatchToolRequiresWritePermission(t *testing.T) {
-	root := t.TempDir()
-	workspace, err := NewWorkspace(root)
+func TestWorkspaceReadToolsNeedNoApproval(t *testing.T) {
+	workspace, err := NewWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewPermissionService(false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	registry := agent.NewRegistry()
-	if err := registerTools(registry, workspace, nil, service, func() string { return "session" }); err != nil {
-		t.Fatal(err)
-	}
-	tool, ok := registry.Get("apply_patch")
-	if !ok {
-		t.Fatal("apply_patch was not registered")
-	}
-	result, err := tool.Execute(context.Background(), agent.ToolInvocation{CallID: "call-patch", Name: "apply_patch", RawInput: `{"operations":[{"operation":"create","path":"new.txt","content":"new"}]}`})
-	if err != nil || !result.IsError || !result.StopTurn || !strings.Contains(result.Content, "approval is unavailable") {
+	catalog := newTestCatalog(t, newTestGate(t, false), workspaceToolEntries(workspace, nil))
+	ctx := testRunContext(context.Background(), "run-read", "session", nil)
+	result, err := executeCatalogTool(t, ctx, catalog, agent.ToolInvocation{CallID: "cwd", Name: "get_working_directory", RawInput: `{}`})
+	if err != nil || result.IsError || result.Content != workspace.WorkingDirectory() {
 		t.Fatalf("result = %#v, error = %v", result, err)
 	}
 }

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -31,7 +32,6 @@ type Capabilities struct {
 	ToolChoiceRequired bool `json:"tool_choice_required"`
 	ToolChoiceNamed    bool `json:"tool_choice_named"`
 	StructuredOutput   bool `json:"structured_output"`
-	Media              bool `json:"media"`
 	ImageInput         bool `json:"image_input,omitempty"`
 	Reasoning          bool `json:"reasoning"`
 	UsageDetails       bool `json:"usage_details"`
@@ -119,6 +119,93 @@ type GenerateRequest struct {
 	MaxTokens *int `json:"max_tokens,omitempty"`
 	// TopP is the nucleus sampling parameter.
 	TopP *float64 `json:"top_p,omitempty"`
+	// ResponseFormat constrains the shape of the model's text output. It is nil
+	// for ordinary free-form generation.
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+}
+
+// ResponseFormatKind is how tightly a model's text output is constrained.
+type ResponseFormatKind string
+
+const (
+	// ResponseFormatJSON requires syntactically valid JSON without fixing its
+	// shape. Every provider that supports structured output supports this.
+	ResponseFormatJSON ResponseFormatKind = "json"
+	// ResponseFormatJSONSchema requires output conforming to Schema. Providers
+	// that cannot enforce a schema must not declare Capabilities.StructuredOutput.
+	ResponseFormatJSONSchema ResponseFormatKind = "json_schema"
+)
+
+// ResponseFormat asks the model to constrain its own output.
+//
+// It exists because an agent whose answer is consumed by code rather than read
+// by a person - extraction, classification, routing, filling a form - cannot
+// rely on prompting alone: a single stray sentence around the JSON turns a
+// working run into a parse error the runtime has no way to repair. Tool schemas
+// constrain what the model sends *to* your code; this constrains what it sends
+// back.
+//
+// The runtime does not validate the model's output against Schema. Enforcement
+// belongs to the provider, which is why requesting it needs
+// Capabilities.StructuredOutput; an application that must be certain should
+// still parse and check what it received.
+type ResponseFormat struct {
+	// Kind selects how strictly the output is constrained.
+	Kind ResponseFormatKind `json:"kind"`
+	// Name identifies the schema to the provider. Required for
+	// ResponseFormatJSONSchema, ignored otherwise.
+	Name string `json:"name,omitempty"`
+	// Schema is the JSON Schema the output must satisfy. Required for
+	// ResponseFormatJSONSchema, ignored otherwise.
+	Schema json.RawMessage `json:"schema,omitempty"`
+	// Strict asks the provider to reject rather than approximate output that does
+	// not fit the schema. Providers that cannot do this ignore it.
+	Strict bool `json:"strict,omitempty"`
+}
+
+// Validate reports whether a response format is well formed and supported.
+//
+// A model that cannot constrain its output is rejected here rather than at
+// request time, so an agent assembled against the wrong model fails when it is
+// built instead of halfway through a conversation.
+func (f *ResponseFormat) Validate(caps Capabilities) error {
+	if f == nil {
+		return nil
+	}
+	if !caps.StructuredOutput {
+		return fmt.Errorf("model does not support structured output")
+	}
+	switch f.Kind {
+	case ResponseFormatJSON:
+		if f.Name != "" || len(f.Schema) > 0 {
+			return fmt.Errorf("response format %q takes no name or schema", f.Kind)
+		}
+		return nil
+	case ResponseFormatJSONSchema:
+		if f.Name == "" {
+			return fmt.Errorf("response format %q requires a name", f.Kind)
+		}
+		if len(f.Schema) == 0 {
+			return fmt.Errorf("response format %q requires a schema", f.Kind)
+		}
+		if !json.Valid(f.Schema) {
+			return fmt.Errorf("response format schema is not valid JSON")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown response format kind %q", f.Kind)
+	}
+}
+
+// Clone returns a deep copy, so a response format handed across the API
+// boundary never shares its schema bytes with the caller.
+func (f *ResponseFormat) Clone() *ResponseFormat {
+	if f == nil {
+		return nil
+	}
+	cloned := *f
+	cloned.Schema = append(json.RawMessage(nil), f.Schema...)
+	return &cloned
 }
 
 // ValidateGenerateRequest centralizes validation for adapter-facing requests.
@@ -142,6 +229,9 @@ func ValidateGenerateRequest(req *GenerateRequest) error {
 // request reaches Model.
 func ValidateGenerateRequestCapabilities(req *GenerateRequest, caps Capabilities) error {
 	if err := ValidateGenerateRequest(req); err != nil {
+		return err
+	}
+	if err := req.ResponseFormat.Validate(caps); err != nil {
 		return err
 	}
 	return validateImageInputCapability(req.Messages, caps)
@@ -304,6 +394,10 @@ type StreamChunk struct {
 type ChunkType string
 
 const (
+	// ChunkReasoning is a delta of the model's own thinking. Its TextDelta is
+	// accumulated separately from ChunkText and must add up to the terminal
+	// response's reasoning parts.
+	ChunkReasoning ChunkType = "reasoning"
 	// ChunkText is a text delta.
 	ChunkText ChunkType = "text"
 	// ChunkToolCall is one fully assembled tool call.

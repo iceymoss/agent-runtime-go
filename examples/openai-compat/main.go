@@ -78,7 +78,11 @@ func main() {
 	}
 
 	// Print streamed text deltas as they arrive.
-	emitter := agent.NewObservationEmitter(64, func(observation agent.Observation) {
+	//
+	// Lossless because this text is what the reader sees: the default emitter
+	// drops observations when the consumer falls behind the model, which would
+	// print a truncated answer while RunResult.Text stayed complete.
+	emitter := agent.NewObservationEmitterWith(agent.ObservationOptions{QueueSize: 64, Lossless: true}, func(observation agent.Observation) {
 		switch observation.Type {
 		case agent.ObservationTextDelta:
 			fmt.Print(observation.Text)

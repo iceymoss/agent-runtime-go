@@ -113,6 +113,51 @@ Key behavior:
 - Entering a non-`StatusRunning` status clears lease fields automatically; terminal states (`StatusCompleted`/`StatusFailed`/`StatusAbandoned`) cannot change further—any write returns `ErrTerminal`.
 - `MemoryStore` is a reference implementation; data is lost on restart. Production needs database-backed `Store`/`ExecutionLedger`/`UsageLedger`, especially ensuring `Save`'s four-way compare and `RevokeLease`'s "revoke + mark unknown effect" run in the same transaction.
 
+## Wiring into `Agent.Run`
+
+The root runtime's durable entry point is `agent.CheckpointStore`. `durable.CheckpointAdapter` projects `Store` + `ExecutionLedger` onto that port so callers do not re-derive the phase state machine themselves:
+
+```go
+adapter, err := durable.NewCheckpointAdapter(durable.CheckpointAdapterOptions{
+	Store:      store, // *MemoryStore, or your own database implementation
+	Ledger:     store,
+	AttemptKey: "attempt-1", // identifies this attempt in the effect ledger
+})
+if err != nil {
+	log.Fatal(err)
+}
+
+result, err := runner.Run(ctx, agent.RunRequest{
+	Messages: []agent.Message{agent.NewUserMessage("fix the failing test")},
+	DurableRun: &agent.DurableRunConfig{
+		Identity:        agent.RunIdentity{RunKey: "run-001", AgentKey: "coder", SessionID: "s-1", RequestID: "r-1"},
+		CheckpointStore: adapter,
+		LeaseOwner:      "worker-1",
+		LeaseDuration:   time.Minute,
+	},
+})
+```
+
+Mapping rules:
+
+- Every run-lifecycle mutation (`ModelInflight` / `CommitModelResponse` / `PrepareTools` / `CommitTool` / `Suspend` / `Complete` / `Fail`) becomes exactly **one** `Store.Save`, with the phase derived from the checkpoint: remaining `PendingToolCalls` mean `PhaseToolsReady`, a completed outcome means `PhaseFinalizing`, anything else returns to `PhaseModelReady`.
+- Tool lifecycle mutations go to the effect ledger keyed by `ToolExecutionKey`, which is byte-identical to the root runtime's `ToolExecution.IdempotencyKey`, so both layers dedupe on the same anchor.
+- `Suspend` uses `Save` rather than `Release`: a suspended run must persist the blocker stored in its checkpoint, otherwise a later attempt cannot resume that exact tool call through `DurableRun.ToolResume`.
+- `Acquire` may take over a `StatusSuspended` run (`AllowSuspended: true`) because approval and sub-agent suspensions are resumed by a later attempt; a lease that is still live is still refused.
+- Errors satisfy both sentinel families: `ErrLeaseLost` and friends are wrapped as `agent.ErrCheckpointConflict`, and `ErrToolEffectUnknown` is wrapped as `agent.ErrToolExecutionUnknown`, so `errors.Is` works on either side.
+
+### Replaying unknown effects
+
+An `EffectUnknown` left behind by a crash is never replayed automatically by default. When a tool's `ReplayPolicy` already proves replay is safe (`agent.ReplayPolicyIdempotent`), a ledger may implement the optional extension:
+
+```go
+type EffectReplayer interface {
+	ReplayEffect(context.Context, Guard, ExecutionKey, time.Time) (EffectRecord, error)
+}
+```
+
+`MemoryStore` implements it. The adapter calls it only when the runtime has stated that the tool is safe to replay; a ledger without the extension keeps the conservative default and `BeginTool` returns `agent.ErrToolExecutionUnknown`.
+
 ## FAQ
 
 **Q: What is the difference between `ErrLeaseHeld` and `ErrLeaseLost`?**

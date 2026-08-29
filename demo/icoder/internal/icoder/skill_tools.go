@@ -55,17 +55,16 @@ func (t loadSkillTool) Execute(ctx context.Context, invocation agent.ToolInvocat
 	return agent.ToolResult{Content: content}, nil
 }
 
-func registerSkillTools(registry *agent.Registry, catalog skills.Catalog, snapshot skills.Snapshot, permissions permission.Service, sessionID func() string) error {
+// skillToolEntries exposes Skill discovery and loading as ordinary read tools.
+// Skill content is untrusted instruction text, so reading it is a read effect on
+// the catalog resource and never an authorization to do anything.
+func skillToolEntries(catalog skills.Catalog, snapshot skills.Snapshot) []lifecycleEntry {
 	if catalog == nil {
 		return nil
 	}
-	for _, tool := range []agent.Tool{listSkillsTool{snapshot: snapshot}, loadSkillTool{catalog: catalog, snapshot: snapshot}} {
-		wrapped := &authorizedTool{tool: tool, permission: permissions, action: "workspace.read", sessionID: sessionID, resource: func(string) permission.Resource {
-			return permission.Resource{Kind: "skills", Key: string(snapshot.Generation)}
-		}}
-		if err := registry.Register(wrapped); err != nil {
-			return err
-		}
+	resource := permission.Resource{Kind: "skills", Key: string(snapshot.Generation)}
+	return []lifecycleEntry{
+		{listSkillsTool{snapshot: snapshot}, readMetadata("workspace.read"), resource},
+		{loadSkillTool{catalog: catalog, snapshot: snapshot}, readMetadata("workspace.read"), resource},
 	}
-	return nil
 }

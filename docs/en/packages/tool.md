@@ -176,6 +176,36 @@ Key behavior:
 - The example does not inject `ExecutorOptions.Permission`, so authorization is skipped. With a `permission.Service`, deny is recorded as a failure, while ask returns `ErrApprovalPending` and `ExecuteResult.Blocker`.
 - Calling again with the same `ExecuteRequest` causes `Executor` to read the completed ledger record and return it directly without executing the tool again.
 
+## Suspension and resumption
+
+A tool has more than two possible outcomes. Some tools hand work off - to a child agent, a webhook, a queued job - so they have started something but cannot produce a result now. Recording that as a failure loses the handle recovery needs; recording it as unknown forbids a replay that is in fact safe. It therefore gets a state of its own: `StatusSuspended`.
+
+A tool expresses this by returning `agent.ToolSuspensionError`:
+
+```go
+func (t *delegateTool) Execute(ctx context.Context, invocation agent.ToolInvocation) (agent.ToolResult, error) {
+	if invocation.Resume == nil {
+		handle := t.startChild(ctx, invocation.RawInput)   // start the outside work
+		return agent.ToolResult{}, &agent.ToolSuspensionError{Suspension: agent.ToolSuspension{
+			Kind: agent.ToolSuspensionExternal, RequestRef: handle, ResumeToken: token, Revision: 1,
+		}}
+	}
+	// On resume the tool gets its own handle back and claims the work it started
+	// rather than starting it again.
+	return t.collect(ctx, invocation.Resume.RequestRef)
+}
+```
+
+What happens next:
+
+1. The executor calls `ExecutionLedger.Suspend`, parking the execution at `StatusSuspended` with its handle. Interceptor `After` and `OnError` hooks deliberately do **not** run: nothing failed and there is no result to process yet, so both run when the resumed execution actually finishes.
+2. The bridge projects it as the root runtime's `ToolSuspensionError`, so the whole run is checkpointed and returns `suspended` + `tool_suspended`.
+3. A later attempt hands the same handle back through `DurableRun.ToolResume`. The executor's `Resume` re-arms the execution **under its original fence** and invokes the tool again with `invocation.Resume` set.
+
+The executor dispatches on `Kind`: `ToolSuspensionApproval` is re-authorized against the permission record, and every other kind is handed back to the tool. The runtime itself never interprets `Kind`, so an application may define suspension reasons this package does not know about, as long as whatever resumes them understands them.
+
+A resume must carry the exact handle the executor issued. A mismatched token or revision returns `ErrExecutionConflict`; otherwise anything that knew an execution key could restart someone else's work.
+
 ## FAQ
 
 **Q: How does this package relate to the root package's `agent.Registry`? Must tools be registered twice?**

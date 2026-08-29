@@ -1,0 +1,8 @@
+- 文档中英双语镜像：`docs/`（简体中文，站点默认语言）与 `docs/en/` 文件一一对应。**改其中一边必须同步改另一边**，不允许只更新一种语言
+- 每个包一篇指南：`docs/packages/<pkg>.md` 和 `docs/en/packages/<pkg>.md`，结构固定为 是什么 → 为什么需要 → 怎么用 → FAQ
+- 公开 API 变更后要检查四处：双语包文档、`README.md`、`README.zh-CN.md`、`CHANGELOG.md` 的 `## [Unreleased]`
+- CHANGELOG 遵循 Keep a Changelog 分组（Added / Changed / Fixed / Removed）。`0.x` 的 minor 允许破坏性变更，但必须在条目里写明破坏内容和迁移方式
+- 站点用 VitePress 构建：srcDir 是 `docs/`，outDir 是 `cmd/docs/dist`。包管理器只用 **bun**，不要 npm / pnpm / yarn
+- `cmd/docs/dist` 是构建产物，不要手改；导航与侧边栏改 `docs-site/.vitepress/config.*`
+- 文档里的代码片段必须是能编译通过的真实 API，不写伪代码；完整示例优先链接 `examples/` 和 `demo/icoder`，不要在文档里维护第二份实现
+- 不描述尚未实现的能力；`v0.x` API 可能变更的提示保留，不要删

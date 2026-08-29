@@ -165,7 +165,10 @@ func TestLimitedBufferReportsTruncation(t *testing.T) {
 }
 
 func TestWorkspaceChangeDirectoryAffectsRelativeTools(t *testing.T) {
-	root := t.TempDir()
+	// NewWorkspace resolves symlinks so path confinement cannot be bypassed
+	// through one. The expected paths must be resolved the same way, otherwise
+	// this test fails on platforms whose temp directory is itself a symlink.
+	root := resolvedTempDir(t)
 	subdir := filepath.Join(root, "pkg", "agent")
 	if err := os.MkdirAll(subdir, 0o755); err != nil {
 		t.Fatal(err)
@@ -542,4 +545,15 @@ func TestWorkspaceSearchSkipsBinaryLargeAndSymlinkFiles(t *testing.T) {
 	if err != nil || len(matches) != 0 {
 		t.Fatalf("Search() = %#v, %v", matches, err)
 	}
+}
+
+// resolvedTempDir returns a temporary directory with symlinks already resolved,
+// matching what NewWorkspace stores as its root.
+func resolvedTempDir(t *testing.T) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }

@@ -149,5 +149,6 @@ In between, the runtime feeds invalid args back for the model to fix, detects re
 - Core types and execution semantics → [Core concepts](concepts.md)
 - Full adapter options (local Ollama, OpenRouter, non-streaming fallback) → [providers/openaicompat](packages/openaicompat.md)
 - Core execution capabilities (allowlists, stop conditions, progress observation) → [agent](packages/agent.md)
-- Multi-turn sessions, persistence, crash recovery → [session](packages/session.md), [durable](packages/durable.md)
+- Carrying history and storing a turn → [`examples/chat`](https://github.com/iceymoss/agent-runtime-go/blob/main/examples/chat/main.go) and [Persisting a conversation](packages/agent.md)
+- Cross-process sessions and crash recovery → [session](packages/session.md), [durable](packages/durable.md)
 - Full reference app (permissions, SQLite, Skills, MCP, sub-agents) → [iCoder tutorial](icoder.md)

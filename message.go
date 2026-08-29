@@ -1,7 +1,3 @@
-// Package agent provides provider-neutral messages, models, tools, streaming,
-// and a stateless multi-step model/tool runtime. Applications supply concrete
-// model and tool adapters and may add optional child packages for stateful or
-// durable hosting.
 package agent
 
 import (
@@ -36,6 +32,14 @@ const (
 	PartToolResult PartType = "tool_result"
 	// PartImage is a provider-neutral user image input.
 	PartImage PartType = "image"
+	// PartReasoning is a model's own thinking, kept separate from the answer.
+	//
+	// It is not part of Message.Text() and adapters do not send it back upstream:
+	// most providers reject their own reasoning as assistant input, and a chain
+	// of thought replayed as conversation would change what the model is
+	// answering. Keep it for display and audit; treat it as untrusted text like
+	// any other model output.
+	PartReasoning PartType = "reasoning"
 )
 
 var imageDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -54,7 +58,7 @@ type ImageContent struct {
 // a part list instead of a single string.
 type ContentPart struct {
 	Type PartType `json:"type"`
-	// Text is valid only when Type=PartText.
+	// Text is valid when Type=PartText or Type=PartReasoning.
 	Text string `json:"text,omitempty"`
 	// ToolCall is valid only when Type=PartToolCall.
 	ToolCall *ToolCall `json:"tool_call,omitempty"`
@@ -155,6 +159,20 @@ func (m Message) Text() string {
 	return b.String()
 }
 
+// Reasoning returns the model's thinking, which Text deliberately omits.
+//
+// An application shows it, stores it, or ignores it; it never feeds it back as
+// input, because the adapter that produced it will not send it upstream either.
+func (m Message) Reasoning() string {
+	var b strings.Builder
+	for _, p := range m.Parts {
+		if p.Type == PartReasoning {
+			b.WriteString(p.Text)
+		}
+	}
+	return b.String()
+}
+
 // ToolCalls returns all tool calls in the message.
 func (m Message) ToolCalls() []ToolCall {
 	var calls []ToolCall
@@ -190,6 +208,10 @@ func ValidateMessage(m Message) error {
 		case PartText:
 			if part.ToolCall != nil || part.ToolResult != nil || part.Image != nil || m.Role == RoleTool {
 				return fmt.Errorf("invalid text part for role %q", m.Role)
+			}
+		case PartReasoning:
+			if m.Role != RoleAssistant || part.ToolCall != nil || part.ToolResult != nil || part.Image != nil {
+				return fmt.Errorf("invalid reasoning part for role %q", m.Role)
 			}
 		case PartToolCall:
 			if m.Role != RoleAssistant || part.ToolCall == nil || part.ToolResult != nil || part.Image != nil || part.Text != "" || part.ToolCall.ID == "" || part.ToolCall.Name == "" {
@@ -233,4 +255,34 @@ func validateImagePart(role Role, part ContentPart) error {
 		return fmt.Errorf("invalid referenced image metadata")
 	}
 	return nil
+}
+
+// cloneMessages deep-copies a message slice.
+//
+// Everything the runtime hands across its API boundary is copied, so a caller
+// that mutates what it received cannot reach back into state the runtime is
+// still using - a bug class this package defends against rather than documents.
+func cloneMessages(messages []Message) []Message {
+	cloned := make([]Message, len(messages))
+	for i, message := range messages {
+		cloned[i] = message
+		cloned[i].Parts = make([]ContentPart, len(message.Parts))
+		for j, part := range message.Parts {
+			cloned[i].Parts[j] = part
+			if part.ToolCall != nil {
+				call := *part.ToolCall
+				cloned[i].Parts[j].ToolCall = &call
+			}
+			if part.ToolResult != nil {
+				result := *part.ToolResult
+				cloned[i].Parts[j].ToolResult = &result
+			}
+			if part.Image != nil {
+				image := *part.Image
+				image.Data = append([]byte(nil), part.Image.Data...)
+				cloned[i].Parts[j].Image = &image
+			}
+		}
+	}
+	return cloned
 }

@@ -1,0 +1,9 @@
+- 三条依赖铁律由 `deps_test.go` 在测试里强制，写 import 前先确认：① 根包 `agent` 不得 import 本模块任何子包；② 任何包不得 import `.../internal/...`；③ 生产包不得 import `agenttest`
+- 需要共享类型时放在根包，子包用 type alias 引用（例：`durable/types.go` 的 `type Checkpoint = agent.Checkpoint`），不要在子包里复制一份定义
+- 如果发现"根包需要知道某个子包"，说明设计反了：在根包定义接口（port），由子包去实现
+- 子包之间尽量不互相依赖；确实需要时保持单向、无环，并在 PR 说明里写清理由
+- 子包文件按职责拆分，沿用既有命名：`contracts.go`（接口与类型）、`errors.go`（哨兵错误）、`memory.go`（内存参考实现）、`validation.go`、`copy.go`
+- 每个子包都要提供内存实现，保证调用方不依赖数据库就能测试
+- 子包只暴露 port 与语义，不绑定具体存储/传输实现；SQLite、HTTP server、TUI 这类具体实现放 `demo/icoder` 或调用方项目
+- 新增导出符号就是新增公开 API：先确认能否用现有类型表达；确实要加就必须配齐 doc comment、外部包测试和中英双语文档
+- 子包是可选依赖，能力必须"渐进采用"：只用根包的应用不能因为新子包被迫引入额外依赖或额外配置

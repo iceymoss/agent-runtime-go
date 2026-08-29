@@ -12,10 +12,31 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
+// ToolSuspensionKind names why a tool call cannot finish now. The runtime never
+// interprets it: it persists the whole suspension and hands it back unchanged to
+// the attempt that resumes. An application may therefore define its own kinds for
+// reasons this package does not know about, as long as whatever resumes the call
+// understands them.
 type ToolSuspensionKind string
 
-const ToolSuspensionApproval ToolSuspensionKind = "approval"
+const (
+	// ToolSuspensionApproval means a human decision is required before the tool
+	// may cross the effect boundary. The decision itself lives in a permission
+	// record, not in the suspension.
+	ToolSuspensionApproval ToolSuspensionKind = "approval"
+	// ToolSuspensionExternal means the tool started work that completes on
+	// someone else's schedule - a child run, a webhook, a queued job. The tool
+	// owns the handle; the runtime only guarantees it survives until a later
+	// attempt hands it back.
+	ToolSuspensionExternal ToolSuspensionKind = "external"
+)
 
+// ToolSuspension is a durable handle to one tool call that could not complete.
+//
+// It is deliberately small and opaque: it carries identity, not state. Anything
+// the resumed call needs to know belongs in the record the RequestRef points at,
+// so a suspension can be persisted in a checkpoint without embedding tool input,
+// tool output, or credentials.
 type ToolSuspension struct {
 	Kind         ToolSuspensionKind `json:"kind"`
 	ExecutionKey string             `json:"execution_key,omitempty"`
