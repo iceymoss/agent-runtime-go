@@ -16,7 +16,7 @@ import (
 )
 ```
 
-Minimal runnable example: [quickstart.md](quickstart.md). The iCoder demo is a standalone module with an extra CGO SQLite driver dependency (see [icoder.md](icoder.md)); the runtime Core itself does not depend on SQLite or CGO.
+Minimal runnable example: [chapter 1 of Build your agent](guide/01-first-run.md). The iCoder demo is a standalone module with an extra CGO SQLite driver dependency (see [icoder.md](icoder.md)); the runtime Core itself does not depend on SQLite or CGO.
 
 <a id="result-semantics"></a>
 ## Outcome, StopReason, FinishReason

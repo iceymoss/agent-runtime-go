@@ -60,8 +60,8 @@ Hello from Agent Runtime for Go.
 
 按你所处的阶段选择路径：
 
-- **第一次接触**：[快速开始](quickstart.md)（10 分钟跑通一个会调工具的真实模型 Agent）→ [核心概念](concepts.md)（建立 Message / Model / Tool / 停止语义的心智模型）。
-- **开始写自己的 Agent**：先读 [agent](packages/agent.md) 和 [providers/openaicompat](packages/openaicompat.md)，这两篇覆盖了大多数应用的全部需求；其余子包在需要时按侧边栏分组查阅，每篇结构统一：是什么 → 为什么需要它 → 怎么用 → 常见问题。
+- **第一次接触**：[构建你的 Agent](guide/index.md)——从一次最小调用到能上生产的 agent，按顺序读，每章结束时程序都能跑。赶时间就只读前三章。
+- **查某个包的细节**：18 篇包文档是参考层，结构统一为 是什么 → 为什么需要它 → 怎么用 → 常见问题。教程里每章末尾都链到对应的那几篇。
 - **准备上生产**：[生产组合模式](production.md) 讲 provider、权限、状态、事件如何组合成服务；[运行循环内部机制](internals.md) 用于排查 stream、工具执行、停止与恢复问题。
 - **看完整参考实现**：[iCoder 端到端教程](icoder.md) 展示一个真实 Code Agent 如何组合所有子包；[速查表](reference.md) 汇总枚举、错误分类与验证命令。
 

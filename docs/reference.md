@@ -16,7 +16,7 @@ import (
 )
 ```
 
-最小可运行示例见 [quickstart.md](quickstart.md)。iCoder demo 是独立 module，额外依赖 CGO SQLite driver（见 [icoder.md](icoder.md)）；runtime Core 本身不依赖 SQLite 或 CGO。
+最小可运行示例见[《构建你的 Agent》第 1 章](guide/01-first-run.md)。iCoder demo 是独立 module，额外依赖 CGO SQLite driver（见 [icoder.md](icoder.md)）；runtime Core 本身不依赖 SQLite 或 CGO。
 
 <a id="result-semantics"></a>
 ## Outcome、StopReason、FinishReason

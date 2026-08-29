@@ -243,7 +243,7 @@ agent-runtime-go
 
 应用负责保存当前 user message 和 `RunResult.Messages`。根 `Agent` 自身无会话状态，可以被多个请求并发复用。
 
-完整入门步骤见[《快速开始》](docs/quickstart.md)。可运行的 Code Agent reference application 见 [`demo/icoder`](demo/icoder/README.md)。
+完整入门步骤见[《构建你的 Agent》](docs/guide/index.md)。可运行的 Code Agent reference application 见 [`demo/icoder`](demo/icoder/README.md)。
 
 ## 选择子包
 
@@ -316,7 +316,7 @@ validate response <- aggregate one model step
 
 文档提供中英双语。中文：[docs](docs/README.md)。英文：[docs/en](docs/en/README.md)。站点导航栏可切换语言。
 
-- 入门：[快速开始](docs/quickstart.md) · [核心概念](docs/concepts.md)
+- 入门：[构建你的 Agent](docs/guide/index.md) · [核心概念](docs/concepts.md)
 - 子包指南（每个包一篇独立文档，覆盖"是什么、为什么、怎么用、常见问题"）：从 [agent 根包](docs/packages/agent.md) 和 [providers/openaicompat](docs/packages/openaicompat.md) 开始
 - 进阶：[运行循环内部机制](docs/internals.md) · [生产组合模式](docs/production.md) · [iCoder 教程](docs/icoder.md) · [速查表](docs/reference.md)
 

@@ -60,8 +60,8 @@ Hello from Agent Runtime for Go.
 
 Pick a path for where you are:
 
-- **First contact:** [Quickstart](quickstart.md) (run a real model agent with tools in ~10 minutes) → [Core concepts](concepts.md) (mental model for Message / Model / Tool / stop semantics).
-- **Writing your own agent:** Start with the [agent root package](packages/agent.md) and [providers/openaicompat](packages/openaicompat.md)—those two cover most apps. Other subpackages are grouped in the sidebar when you need them; each page follows: What it is → Why you need it → How to use it → FAQ.
+- **First contact:** [Build your agent](guide/index.md) — from one minimal call to an agent you can ship, in order, with a runnable program at the end of every chapter. In a hurry, read the first three chapters.
+- **Looking up one package:** The 18 package pages are the reference layer, each following: What it is → Why you need it → How to use it → FAQ. Every guide chapter links to the ones it introduced.
 - **Going to production:** [Production composition](production.md) covers how providers, permissions, state, and events form a service; [Run-loop internals](internals.md) helps debug stream, tool execution, stop, and recovery issues.
 - **Full reference implementation:** The [iCoder end-to-end tutorial](icoder.md) shows a real Code Agent composing all subpackages; the [cheat sheet](reference.md) summarizes enums, error classification, and validation commands.
 
