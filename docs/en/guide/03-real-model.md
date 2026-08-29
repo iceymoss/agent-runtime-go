@@ -2,36 +2,42 @@
 
 ## Where you are stuck
 
-The first two chapters used a model with a hard-coded answer. Now you want a real one — without being locked to a single vendor.
+The first two chapters used a model with a hard-coded answer. Now you want a real one — without being locked to a vendor, and without one provider hiccup failing the whole turn.
 
 ## Any OpenAI-compatible endpoint
 
-OpenAI, DeepSeek, Qwen, Kimi, OpenRouter, vLLM, and Ollama all speak OpenAI's `/chat/completions`, so the official adapter works without implementing `Model` yourself:
+OpenAI, DeepSeek, Qwen, Kimi, OpenRouter, vLLM, and Ollama all speak OpenAI's `/chat/completions`, so the official adapter works directly:
 
 ```go
-import "github.com/iceymoss/agent-runtime-go/providers/openaicompat"
-
-model := openaicompat.New("https://api.deepseek.com/v1", os.Getenv("DEEPSEEK_API_KEY"))
-
-runner, err := agent.New(agent.Config{
-	Key: "my.assistant", ModelName: "deepseek-chat", MaxSteps: 8,
-}, model, registry)
+func NewModel() (model agent.Model, name string) {
+	key := os.Getenv("OPENAI_API_KEY")
+	if key == "" {
+		return &scriptedModel{}, "scripted-v1"
+	}
+	baseURL := os.Getenv("OPENAI_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	}
+	modelName := os.Getenv("OPENAI_MODEL")
+	if modelName == "" {
+		modelName = "gpt-4o-mini"
+	}
+	// retry wraps the adapter rather than the other way round: it needs the
+	// adapter's error classification to decide what is worth repeating.
+	return retry.New(openaicompat.New(baseURL, key), retry.Options{}), modelName
+}
 ```
 
 Switching provider is two values: `baseURL` and `ModelName`. For a local Ollama, leave the key empty (`openaicompat.New("http://localhost:11434/v1", "")`) and the adapter omits the `Authorization` header.
 
-The adapter handles SSE streaming, reassembles tool calls split across deltas, normalizes usage (including cache and reasoning tokens), parses `Retry-After`, and classifies HTTP failures into `agent.ModelError` with retry semantics.
+**Credentials are read by the application, not the library.** The `os.Getenv` above is your code — the runtime reads no environment variables and no config files, so this function is the only place that knows where the key lives.
 
-Replace chapter 1's fake model with this line, add chapter 2's tool, and you have a working agent. The complete program is [`examples/openai-compat`](https://github.com/iceymoss/agent-runtime-go/blob/main/examples/openai-compat/main.go).
+Keeping a fake model for the no-key case pays off: examples, tests, and CI all run without real credentials.
 
 ## Adding retries
 
-Providers wobble. Wrap the model:
-
 ```go
-import "github.com/iceymoss/agent-runtime-go/providers/retry"
-
-model := retry.New(openaicompat.New(baseURL, apiKey), retry.Options{})
+model := retry.New(openaicompat.New(baseURL, key), retry.Options{})
 ```
 
 A zero `Options{}` means 3 attempts, 200ms base, 30s cap, with jitter. A provider's `Retry-After` wins over the backoff curve.
@@ -40,37 +46,42 @@ Writing this yourself is easy to get wrong: **wrapping only what `Stream()` retu
 
 It deliberately does **not** retry once content has reached the caller: grafting a fresh stream onto a half-delivered one either fails the runtime's consistency check or, worse, passes it with the text duplicated. The error is forwarded and you decide whether to rerun the turn.
 
-## More than one model
+## Writing your own adapter
 
-Applications often need two: a capable model to answer and a cheap one to summarize. The `provider` subpackage keeps that catalog and hands out models by role, with credentials passed in explicitly:
+A protocol that is not OpenAI-compatible (Anthropic Messages, Bedrock) means implementing `Model`'s three methods yourself. One rule is easy to trip over: **the streamed chunks must add up to exactly the terminal response.**
 
-```go
-import "github.com/iceymoss/agent-runtime-go/provider"
-```
-
-With a single model you do not need it — holding an `agent.Model` is enough.
-
-## Versioned prompts
-
-A system prompt hard-coded as a string literal means nobody can say which version production is running. The `prompt` subpackage gives templates a version you can record with each run:
+An adapter that already holds the whole answer hands it to `agent.StreamResponse`, which produces a compliant chunk sequence:
 
 ```go
-import "github.com/iceymoss/agent-runtime-go/prompt"
+func say(text string) <-chan agent.StreamChunk {
+	message := agent.NewAssistantMessage(text)
+	message.FinishReason = agent.FinishStop
+	return agent.StreamResponse(&agent.Response{
+		Message: message, FinishReason: agent.FinishStop, ModelName: "scripted-v1",
+		Usage: agent.Usage{PromptTokens: 20, CompletionTokens: 12, TotalTokens: 32},
+	})
+}
 ```
 
-Also optional. `agent.NewSystemMessage("...")` from chapter 1 works; reach for this when you need to answer "which prompt produced that run last week".
+An adapter that genuinely streams token by token emits its own deltas. Verify it with the conformance suite from [chapter 12](./12-testing.md) — wiring it into the library's own `openaicompat` found three real defects.
+
+## Several models, versioned prompts
+
+Applications often need two models: a capable one to answer and a cheap one to summarize. `provider` keeps that catalog and hands out models by role.
+
+A system prompt hard-coded as a string literal means nobody can say which version production is running; `prompt` gives templates a version you can record with each run.
+
+Both are optional — one model plus `agent.NewSystemMessage("...")` works. Reach for them when you need to answer "which prompt produced that run last week".
 
 ## Worth knowing
 
 **`ModelName` is the `model` field sent upstream**, so one adapter instance can serve several agents using different model names.
 
-**Narrow the declared capabilities with `WithCapabilities` when your endpoint cannot honor them.** The adapter declares tools, all three tool-choice modes, structured output, and reasoning by default. When the declaration and reality disagree, the runtime refuses illegal requests at assembly — better than discovering it mid-conversation.
-
-**Credentials are passed in by you.** The adapter reads no environment variables and no config files; the `os.Getenv` above is *your application* doing that.
+**Narrow the declared capabilities with `WithCapabilities` when your endpoint cannot honor them.** The adapter declares tools, all three tool-choice modes, structured output, and reasoning by default. When declaration and reality disagree, the runtime refuses illegal requests at assembly — better than discovering it mid-conversation.
 
 ## Going deeper
 
-- [openaicompat](../packages/openaicompat.md) — every option: non-streaming fallback, custom headers, timeouts and proxies
+- [openaicompat](../packages/openaicompat.md) — non-streaming fallback, custom headers, timeouts and proxies
 - [retry](../packages/retry.md) — what is retried, what is not, and why
-- [provider](../packages/provider.md) — multi-model catalog and factory
-- [prompt](../packages/prompt.md) — templates and versions
+- [provider](../packages/provider.md) · [prompt](../packages/prompt.md)
+- Complete runnable code: [`examples/guide/model.go`](https://github.com/iceymoss/agent-runtime-go/blob/main/examples/guide/model.go)

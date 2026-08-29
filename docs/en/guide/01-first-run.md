@@ -112,5 +112,11 @@ completed complete
 
 ## Going deeper
 
+From the next chapter on, the code comes from [`examples/guide`](https://github.com/iceymoss/agent-runtime-go/tree/main/examples/guide) — a working ops assistant that each chapter adds one thing to. CI compiles and tests it, so the documentation cannot drift away from the implementation.
+
+```bash
+go run ./examples/guide        # no API key needed
+```
+
 - [agent package reference](../packages/agent.md) — allowlists, stop conditions, loop detection
 - [Core concepts](../concepts.md) — the Message / Model / Tool / stopping mental model

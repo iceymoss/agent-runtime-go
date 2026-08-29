@@ -2,93 +2,108 @@
 
 ## Where you are stuck
 
-The agent from chapter 1 can only talk. To make it do anything — query a database, call an internal API, read a file — you have to expose your Go functions to the model.
+The agent from chapter 1 can only talk. For an ops assistant to be useful it has to actually read the logs — that is, call your Go functions.
 
 ## Defining a tool
 
-A tool is a function plus an input struct. The JSON Schema is generated from the struct by reflection; you do not write it:
+A tool is a function plus an input struct. The JSON Schema is generated from the struct by reflection:
 
 ```go
-type WeatherInput struct {
-	City string `json:"city" description:"City name"`
-	Days int    `json:"days,omitempty" description:"Forecast days"`
+type ReadLogsInput struct {
+	Service string `json:"service" description:"Service name, e.g. checkout"`
+	Level   string `json:"level,omitempty" description:"Return this level and above: INFO / WARN / ERROR"`
 }
 
-weather := agent.MustNewTool("get_weather", "Get the current weather for a city.",
-	func(ctx context.Context, in WeatherInput) (agent.ToolResult, error) {
-		report, err := weatherAPI.Query(ctx, in.City)
-		if err != nil {
-			return agent.ToolResult{}, err
-		}
-		return agent.ToolResult{Content: report}, nil
-	})
-
-registry := agent.NewRegistry()
-if err := registry.Register(weather); err != nil {
-	panic(err)
+func ReadLogsTool(ops *Ops) agent.Tool {
+	return agent.MustNewTool("read_logs", "Read a service's recent logs.",
+		func(_ context.Context, in ReadLogsInput) (agent.ToolResult, error) {
+			lines, ok := ops.logs[in.Service]
+			if !ok {
+				// The model chose a service that does not exist. It can fix that
+				// by choosing another, so this is a result, not a failure.
+				return agent.ToolResult{
+					IsError: true,
+					Content: fmt.Sprintf("unknown service %q, known: %s", in.Service, strings.Join(ops.services(), ", ")),
+				}, nil
+			}
+			if in.Level != "" {
+				lines = filterByLevel(lines, in.Level)
+			}
+			return agent.ToolResult{Content: strings.Join(lines, "\n")}, nil
+		},
+		agent.WithToolReplayPolicy(agent.ReplayPolicyIdempotent))
 }
 ```
 
-Non-pointer fields without `omitempty` become `required`, so `City` is mandatory and `Days` is optional. The schema is strict by default: undeclared properties are rejected and fed back to the model to correct.
+Non-pointer fields without `omitempty` become `required`, so `Service` is mandatory and `Level` is optional. The schema is strict by default: undeclared properties are rejected and fed back to the model to correct.
 
 **The description is written for the model.** It decides when the tool gets called, which makes it more important than a comment written for a human.
 
+Note that `ops` arrives through a closure. Tools are the only channel between your application and the model, so the rules about what may happen live here, not in a prompt.
+
 ## Two failures, two meanings
 
-This is the part of the chapter to remember:
+This is the part of the chapter to remember. The second tool changes the world:
 
 ```go
-// The model can see this and fix it — the loop continues
-return agent.ToolResult{IsError: true, Content: "unknown city: " + in.City}, nil
-
-// The model cannot fix this — end the attempt, keep the cause
-return agent.ToolResult{}, fmt.Errorf("weather API unreachable: %w", err)
+func RestartTool(ops *Ops) agent.Tool {
+	return agent.MustNewTool("restart_service", "Restart a service. This interrupts in-flight requests.",
+		func(ctx context.Context, in RestartInput) (agent.ToolResult, error) {
+			if _, ok := ops.logs[in.Service]; !ok {
+				// The model can fix this
+				return agent.ToolResult{IsError: true, Content: "unknown service " + in.Service}, nil
+			}
+			if err := ops.restart(ctx, in.Service); err != nil {
+				// The orchestrator is down; the model cannot fix that. End the
+				// attempt with the cause intact.
+				return agent.ToolResult{}, fmt.Errorf("restart %s: %w", in.Service, err)
+			}
+			return agent.ToolResult{Content: "restarted " + in.Service + " (reason: " + in.Reason + ")"}, nil
+		},
+		agent.WithToolReplayPolicy(agent.ReplayPolicyNever))
+}
 ```
 
-Bad arguments, a missing resource, a user without permission — the model might succeed with different arguments, so use `IsError: true` and the message goes back to it as a tool result.
+`ToolResult{IsError: true}` goes back to the model as a tool result and the loop continues; a Go error ends the run and hands you the cause.
 
-A database that is down, expired credentials, a full disk — a hundred more attempts will not help, so return a Go error and the runtime ends the run with the cause intact.
+Choosing wrong costs something real. A genuine outage reported as `IsError` makes the model retry pointlessly and never appears in your logs; a correctable argument error reported as a Go error fails a run the model could have recovered from.
 
-Choosing wrong costs you something real. A genuine outage reported as `IsError` makes the model retry pointlessly and never appears in your logs; a correctable argument error reported as a Go error fails a run the model could have recovered from.
+`WithToolReplayPolicy` declares whether the call may be replayed during crash recovery. Reading logs is idempotent; restarting is not — chapters 7 and 9 use that declaration.
 
-## Watching the loop actually loop
-
-Once the tool is registered, the runtime does the whole "model asks → validate → execute → feed back → ask again" cycle:
+## Assembly
 
 ```go
+registry := agent.NewRegistry()
+for _, tool := range []agent.Tool{ReadLogsTool(ops), RestartTool(ops)} {
+	if err := registry.Register(tool); err != nil {
+		return err
+	}
+}
+
 runner, err := agent.New(agent.Config{
-	Key: "my.weather", ModelName: "fake-v1", MaxSteps: 8,
+	Key: "ops.assistant", ModelName: modelName, MaxSteps: 8,
 }, model, registry)
-if err != nil {
-	panic(err)
-}
-
-result, err := runner.Run(context.Background(), agent.RunRequest{
-	Messages: []agent.Message{agent.NewUserMessage("What is the weather in Hangzhou?")},
-})
-if err != nil {
-	panic(err)
-}
-fmt.Println(result.Text)
-fmt.Println("steps:", len(result.Steps))
 ```
+
+Run it and the loop is visible:
 
 ```text
-Hangzhou is sunny and 28 C.
-steps: 2
+> Something looks wrong with checkout, can you look?
+  [calling read_logs {"service":"checkout","level":"WARN"}]
+checkout's payment gateway keeps timing out and the connection pool is exhausted. I suggest restarting checkout.
 ```
 
-`steps: 2` is the evidence: the first step asked for `get_weather`, the second wrote the answer from its result. The complete runnable version is [`examples/tool-agent`](https://github.com/iceymoss/agent-runtime-go/blob/main/examples/tool-agent/main.go).
+Step one asked for `read_logs`, the runtime validated the arguments and executed it; step two wrote the answer from the result.
 
 ## Worth knowing
 
-**Registering a tool after assembly has no effect on an existing Agent.** `agent.New` takes an immutable `ToolSet` snapshot, on purpose: the tool set of a run must be stable and auditable.
+**Registering a tool after assembly has no effect on an existing Agent.** `agent.New` takes an immutable `ToolSet` snapshot — the tool set of a run must be stable and auditable.
 
-**`AllowedTools` distinguishes `nil` from `[]string{}`.** `nil` means every registered tool; `[]string{}` means explicitly no tools. Do not normalize them into one thing.
+**`AllowedTools` distinguishes `nil` from `[]string{}`.** `nil` means every registered tool; `[]string{}` means explicitly none.
 
-**Enforce permissions inside the tool.** "Do not delete files" in a prompt is not a security boundary — neither prompts, nor skills, nor model output are. The real check belongs in `Execute`; see [chapter 7](./07-permission.md).
+**Permissions are not in this chapter.** Right now anything can call `restart_service`. Chapter 7 puts an approval in front of it.
 
 ## Going deeper
 
 - [agent package reference](../packages/agent.md) — all `NewTool` options, and when to implement `Tool` directly
-- [tool subpackage](../packages/tool.md) — when you need an effect ledger, approval suspension, or replay semantics
+- Complete runnable code: [`examples/guide/tools.go`](https://github.com/iceymoss/agent-runtime-go/blob/main/examples/guide/tools.go)

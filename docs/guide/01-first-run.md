@@ -112,5 +112,11 @@ completed complete
 
 ## 深入
 
+从下一章开始，代码来自 [`examples/guide`](https://github.com/iceymoss/agent-runtime-go/tree/main/examples/guide)——一个能跑的运维助手，每章往它上面加一样东西。它被 CI 编译和测试，所以文档里的代码不会和实现漂移。
+
+```bash
+go run ./examples/guide        # 无需 API key
+```
+
 - [agent 包参考](../packages/agent.md) —— 白名单、停止条件、循环检测的完整配置
 - [核心概念](../concepts.md) —— Message / Model / Tool / 停止语义的心智模型
