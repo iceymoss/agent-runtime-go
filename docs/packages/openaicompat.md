@@ -15,6 +15,7 @@ import "github.com/iceymoss/agent-runtime-go/providers/openaicompat"
 - **推理内容**：读取 `reasoning_content` 与 `reasoning` 两种字段名，转成 `PartReasoning`，且**不会回传给上游**——产生它的供应商会拒绝把它当 assistant 输入；
 - **工具调用重组**：上游把一个 tool call 的 JSON 参数拆成多个 delta 下发，适配器按 index 重组为完整调用后才交给运行时；
 - **usage 归一化**：把各家不一致的 token 字段（含 cached tokens、reasoning tokens）归一到 `agent.Usage`，保证分量总和等于 `TotalTokens`；
+- **重试提示**：解析 `Retry-After`（秒数与 HTTP 日期两种写法）填入 `ModelError.RetryAfter`，供应商说什么时候能再来就按它来；
 - **错误分类**：HTTP 失败被分类为带重试语义的 `agent.ModelError`——401/403 → 认证错误（不可重试）、429 → 限流（可重试）、5xx → 传输错误（可重试）、其余 4xx → 请求被拒（不可重试）。
 
 ```go

@@ -140,6 +140,10 @@ Every in-memory reference implementation in the library runs these suites (see e
 
 The suites assert only the observable behavior a port promises. They do not assume a particular status or phase policy, storage layout, or error text: every check matches a package-level sentinel with `errors.Is`.
 
+## Who runs these suites
+
+Every in-memory reference implementation in the library runs its own persistence suite, `providers/openaicompat` runs `TestModel`, and each SQLite adapter in `demo/icoder` runs the matching suite. That is deliberate: a suite and its reference drift apart unless one checks the other, and the reference is exactly where drift is least visible and most costly — it is the copy everyone starts from. Wiring `TestModel` into `openaicompat` found three real defects (see the CHANGELOG).
+
 ## FAQ
 
 **Q: What does the request the suite sends to the model look like?**

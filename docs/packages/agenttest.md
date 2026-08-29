@@ -140,6 +140,10 @@ agenttest.TestPermissionStore(t, func(t *testing.T, clock permission.Clock) perm
 
 套件只断言端口承诺的可观察行为，不假设任何具体的状态/相位策略、存储结构或错误文本——判定一律用 `errors.Is` 匹配包级哨兵错误。
 
+## 谁在跑这些套件
+
+库自带的每个内存参考实现都跑自己那套持久化套件，`providers/openaicompat` 跑 `TestModel`，`demo/icoder` 的每个 SQLite 适配器跑对应套件。这是有意的：套件和参考实现如果不互相验收就会漂移，而参考实现恰恰是漂移最不容易被发现、代价又最大的地方——它是所有人抄的那一份。给 `openaicompat` 补上 `TestModel` 时就抓出了三个真实缺陷（见 CHANGELOG）。
+
 ## 常见问题
 
 **Q: 套件发给模型的请求长什么样？**

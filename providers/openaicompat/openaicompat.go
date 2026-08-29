@@ -25,6 +25,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -120,6 +121,9 @@ func New(baseURL, apiKey string, opts ...Option) *Model {
 			// provider sends it. A provider that never does simply produces
 			// messages without reasoning parts.
 			Reasoning: true,
+			// Declared because normalizeUsage maps the vendor-specific cache and
+			// reasoning token fields into agent.Usage rather than leaving them out.
+			UsageDetails: true,
 		},
 	}
 	for _, opt := range opts {
@@ -239,12 +243,12 @@ func (m *Model) post(ctx context.Context, wire chatRequest) (*http.Response, err
 	if httpResponse.StatusCode < 200 || httpResponse.StatusCode >= 300 {
 		defer httpResponse.Body.Close()
 		snippet, _ := io.ReadAll(io.LimitReader(httpResponse.Body, maxErrorBodyBytes))
-		return nil, classifyStatus(httpResponse.StatusCode, snippet)
+		return nil, classifyStatus(httpResponse.StatusCode, httpResponse.Header.Get("Retry-After"), snippet)
 	}
 	return httpResponse, nil
 }
 
-func classifyStatus(status int, body []byte) error {
+func classifyStatus(status int, retryAfterHeader string, body []byte) error {
 	kind, retryable := agent.ModelErrorKindRejected, false
 	switch {
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
@@ -254,8 +258,59 @@ func classifyStatus(status int, body []byte) error {
 	case status >= 500:
 		kind, retryable = agent.ModelErrorKindTransport, true
 	}
+	// The cause carries the raw body for a log; the safe detail carries only the
+	// provider's own message, which is the part an operator needs to see and the
+	// part that is safe to show.
 	cause := fmt.Errorf("provider status %d: %s", status, strings.TrimSpace(string(body)))
-	return agent.NewModelError(kind, retryable, status, 0, "provider rejected request", cause)
+	return agent.NewModelError(kind, retryable, status, parseRetryAfter(retryAfterHeader), safeDetail(body), cause)
+}
+
+// safeDetail extracts the provider's own explanation of a failure.
+//
+// Without it every 4xx reads the same, and an operator debugging a rejected
+// request has to go find the raw body somewhere else. The message is
+// provider-authored text about the request, so it is safe to surface; the body
+// as a whole is not, and stays in the cause.
+func safeDetail(body []byte) string {
+	var decoded struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil || decoded.Error.Message == "" {
+		return "provider rejected request"
+	}
+	if decoded.Error.Type != "" {
+		return fmt.Sprintf("provider rejected request: %s (%s)", decoded.Error.Message, decoded.Error.Type)
+	}
+	return fmt.Sprintf("provider rejected request: %s", decoded.Error.Message)
+}
+
+// parseRetryAfter reads the standard header in either of its two forms.
+//
+// A rate-limited provider knows when it will accept work again, and dropping
+// that leaves every retry policy guessing - including the one in providers/retry,
+// which honors RetryAfter over its own backoff curve when it is present.
+func parseRetryAfter(header string) time.Duration {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(header); err == nil {
+		if seconds <= 0 {
+			return 0
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	deadline, err := http.ParseTime(header)
+	if err != nil {
+		return 0
+	}
+	if wait := time.Until(deadline); wait > 0 {
+		return wait
+	}
+	return 0
 }
 
 // pendingToolCall accumulates streamed tool call fragments for one index.
@@ -316,6 +371,16 @@ func (m *Model) consumeSSE(ctx context.Context, body io.ReadCloser, chunks chan<
 					usage = chunk.Usage
 				}
 				for _, choice := range chunk.Choices {
+					// A usage-only chunk after the finish reason is normal - that is
+					// what stream_options.include_usage produces. Content after it is
+					// not: the model already said it was done, so anything more is a
+					// broken upstream or a proxy injecting text, and accepting it
+					// would silently change the answer.
+					if finish != "" && (choice.Delta.Content != "" || len(choice.Delta.ToolCalls) > 0 ||
+						choice.Delta.ReasoningContent != "" || choice.Delta.Reasoning != "") {
+						fail(agent.NewModelError(agent.ModelErrorKindProtocol, false, 0, 0, "content arrived after the finish reason", nil))
+						return
+					}
 					if delta := deltaReasoning(choice.Delta.ReasoningContent, choice.Delta.Reasoning); delta != "" {
 						reasoning.WriteString(delta)
 						if !emit(agent.StreamChunk{Type: agent.ChunkReasoning, TextDelta: delta}) {
@@ -378,11 +443,19 @@ func (m *Model) consumeSSE(ctx context.Context, body io.ReadCloser, chunks chan<
 			return
 		}
 	}
+	normalized := normalizeUsage(usage)
+	// The non-streaming path already refuses incoherent usage; a stream must not
+	// be the lenient one, or the same provider bug becomes visible only when
+	// streaming is off.
+	if err := normalized.Validate(); err != nil {
+		fail(agent.NewModelError(agent.ModelErrorKindProtocol, false, 0, 0, "provider reported incoherent usage", err))
+		return
+	}
 	emit(agent.StreamChunk{Type: agent.ChunkFinish, Response: &agent.Response{
 		Message:      message,
 		FinishReason: reason,
 		ModelName:    modelName,
-		Usage:        normalizeUsage(usage),
+		Usage:        normalized,
 	}})
 }
 

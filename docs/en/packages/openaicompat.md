@@ -15,6 +15,7 @@ import "github.com/iceymoss/agent-runtime-go/providers/openaicompat"
 - **Reasoning:** both `reasoning_content` and `reasoning` are read and turned into `PartReasoning`, and neither is ever sent back upstream — the providers that emit reasoning reject it as assistant input;
 - **Tool-call reassembly:** upstream may split one tool call's JSON args across many deltas; the adapter reassembles by index into a complete call before handing it to the runtime;
 - **Usage normalization:** maps inconsistent token fields across vendors (including cached and reasoning tokens) into `agent.Usage` so component sums equal `TotalTokens`;
+- **Retry hints:** `Retry-After` is parsed (both the seconds and HTTP-date forms) into `ModelError.RetryAfter`, so a rate-limited provider sets the pace;
 - **Error classification:** HTTP failures become `agent.ModelError` with retry semantics—401/403 → auth (not retryable), 429 → rate limit (retryable), 5xx → transport (retryable), other 4xx → rejected (not retryable).
 
 ```go

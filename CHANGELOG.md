@@ -137,6 +137,22 @@ While the project is at `v0.x`, minor versions may contain breaking changes.
 
 ### Fixed
 
+- `providers/openaicompat` now runs `agenttest.TestModel`, the suite the project
+  tells third-party adapters to run. Writing the fixtures found three defects in
+  the reference adapter, all of which every copy of it inherited:
+  - `Retry-After` was never parsed, so `ModelError.RetryAfter` was always zero
+    and a rate-limited provider could not tell any retry policy - including
+    `providers/retry` - when to come back.
+  - A failed request reported `"provider rejected request"` and nothing else. The
+    provider's own message now reaches `SafeDetail`, so a 400 says why; the raw
+    body stays in the cause, where it belongs.
+  - The streaming path accepted usage the non-streaming path already rejected,
+    so an incoherent provider total was visible only with streaming off.
+  It also now refuses content that arrives after the model's finish reason
+  (a usage-only trailer, which `stream_options.include_usage` produces, is still
+  accepted), and declares `Capabilities.UsageDetails`, which it had always
+  earned by normalizing cache and reasoning tokens.
+
 - `durable.CheckpointAdapter.BeginTool` returned an error for an execution whose
   result was already committed. A crash between committing an effect and
   committing its checkpoint therefore left the run permanently unresumable
