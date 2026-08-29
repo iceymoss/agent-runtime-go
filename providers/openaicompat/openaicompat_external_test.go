@@ -499,3 +499,132 @@ func TestReasoningRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestOptions covers every option the README tells people to use.
+//
+// They were documented and shipped without a single test, which is how a
+// documented flag quietly stops doing what its doc comment says.
+func TestOptions(t *testing.T) {
+	t.Run("WithName renames the adapter", func(t *testing.T) {
+		if got := openaicompat.New("http://example.invalid", "", openaicompat.WithName("deepseek")).Name(); got != "deepseek" {
+			t.Fatalf("Name() = %q", got)
+		}
+		if openaicompat.New("http://example.invalid", "").Name() == "" {
+			t.Fatal("the default adapter has no name")
+		}
+	})
+
+	t.Run("WithCapabilities narrows what the runtime will request", func(t *testing.T) {
+		narrowed := agent.Capabilities{Tools: true}
+		model := openaicompat.New("http://example.invalid", "", openaicompat.WithCapabilities(narrowed))
+		if model.Capabilities() != narrowed {
+			t.Fatalf("Capabilities() = %+v", model.Capabilities())
+		}
+		// Narrowing must actually be enforced: an agent that asks for structured
+		// output from an endpoint that cannot do it should fail at assembly.
+		if _, err := agent.New(agent.Config{
+			Key: "extract", ModelName: "m", MaxSteps: 4, AllowedTools: []string{},
+			ResponseFormat: &agent.ResponseFormat{Kind: agent.ResponseFormatJSON},
+		}, model, agent.NewRegistry()); !errors.Is(err, agent.ErrAgentConfigInvalid) {
+			t.Fatalf("New() error = %v, want the narrowed capability to be enforced", err)
+		}
+	})
+
+	t.Run("WithHeader is sent on every request", func(t *testing.T) {
+		var seen []string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			seen = append(seen, r.Header.Get("X-Title")+"|"+r.Header.Get("Authorization"))
+			writeSSE(t, w,
+				`{"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}`,
+				`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+				`[DONE]`,
+			)
+		}))
+		defer server.Close()
+		model := openaicompat.New(server.URL, "secret", openaicompat.WithHeader("X-Title", "icoder"))
+		if _, err := runOnce(t, model); err != nil {
+			t.Fatal(err)
+		}
+		if len(seen) != 1 || seen[0] != "icoder|Bearer secret" {
+			t.Fatalf("headers = %#v", seen)
+		}
+	})
+
+	t.Run("WithHTTPClient replaces the transport", func(t *testing.T) {
+		var used bool
+		client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			used = true
+			return http.DefaultTransport.RoundTrip(r)
+		})}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeSSE(t, w,
+				`{"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}`,
+				`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+				`[DONE]`,
+			)
+		}))
+		defer server.Close()
+		if _, err := runOnce(t, openaicompat.New(server.URL, "", openaicompat.WithHTTPClient(client))); err != nil {
+			t.Fatal(err)
+		}
+		if !used {
+			t.Fatal("the configured HTTP client was not used")
+		}
+	})
+
+	t.Run("WithoutStreamUsage omits the field some providers reject", func(t *testing.T) {
+		for _, test := range []struct {
+			name    string
+			options []openaicompat.Option
+			want    bool
+		}{
+			{name: "included by default", want: true},
+			{name: "omitted when disabled", options: []openaicompat.Option{openaicompat.WithoutStreamUsage()}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				var decoded struct {
+					StreamOptions *struct {
+						IncludeUsage bool `json:"include_usage"`
+					} `json:"stream_options"`
+				}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Fatalf("read request: %v", err)
+					}
+					if err := json.Unmarshal(body, &decoded); err != nil {
+						t.Fatalf("decode request: %v", err)
+					}
+					writeSSE(t, w,
+						`{"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}`,
+						`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+						`[DONE]`,
+					)
+				}))
+				defer server.Close()
+				if _, err := runOnce(t, openaicompat.New(server.URL, "", test.options...)); err != nil {
+					t.Fatal(err)
+				}
+				if got := decoded.StreamOptions != nil; got != test.want {
+					t.Fatalf("stream_options present = %v, want %v", got, test.want)
+				}
+			})
+		}
+	})
+}
+
+// runOnce drives one complete run through a model, which is the only way to
+// observe what an option did to the request the adapter actually sent.
+func runOnce(t *testing.T, model agent.Model) (*agent.RunResult, error) {
+	t.Helper()
+	runner, err := agent.New(agent.Config{Key: "options", ModelName: "m", MaxSteps: 4, AllowedTools: []string{}},
+		model, agent.NewRegistry())
+	if err != nil {
+		return nil, err
+	}
+	return runner.Run(context.Background(), agent.RunRequest{Messages: []agent.Message{agent.NewUserMessage("hi")}})
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

@@ -148,6 +148,35 @@ Tool errors come in two kinds with different semantics:
 - `ToolResult{IsError: true}`: model-visible, correctable business errors (e.g. "order not found"); the loop continues;
 - non-nil Go error from `Execute`: infrastructure failure; abort this run immediately.
 
+### Persisting a conversation
+
+The runtime is stateless: it stores nothing, and `RunResult.Messages` contains **only what this turn produced**. Multi-turn conversation is your application joining those turns together:
+
+```go
+// One turn's input = system + stored history + this turn's user message
+messages := append([]agent.Message{systemMessage}, stored...)
+messages = append(messages, agent.NewUserMessage(input))
+
+result, err := runner.Run(ctx, agent.RunRequest{Messages: messages})
+if err != nil {
+	return err
+}
+// Commit only a turn that actually finished
+if result.Outcome == agent.OutcomeCompleted {
+	stored = append(stored, agent.NewUserMessage(input))
+	stored = append(stored, result.Messages...)
+}
+```
+
+Two things are easy to get wrong:
+
+- **You store the user message; it is not in `RunResult.Messages`.** That is deliberate: only the application knows whether a turn that failed halfway should be kept.
+- **Do not commit a turn that did not complete.** Its tool calls have no results yet, so writing it to history makes the next turn's input incoherent.
+
+Where it is stored is your decision — an in-memory slice, your own tables, or the `message` subpackage (which adds revision CAS and branch visibility). The runtime does not care; it takes a `[]agent.Message`.
+
+A complete runnable example is [`examples/chat`](https://github.com/iceymoss/agent-runtime-go/blob/main/examples/chat/main.go).
+
 ### Constrain the model's own output
 
 When the answer is parsed by code rather than read by a person — extraction, classification, routing, filling a form — prompting alone is not enough: one stray sentence around the JSON turns a working run into a parse error the runtime cannot repair. `ResponseFormat` asks the provider to enforce the shape:

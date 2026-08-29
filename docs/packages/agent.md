@@ -148,6 +148,35 @@ tool := agent.MustNewTool("find_order", "按订单号查询订单", handler)
 - `ToolResult{IsError: true}`：模型可见、可修正的业务错误（如"订单不存在"），循环继续；
 - `Execute` 返回非 nil Go error：基础设施故障，立即中止本次运行。
 
+### 持久化一段对话
+
+运行时是无状态的：它什么都不存，`RunResult.Messages` 里**只有本轮新产生的** assistant/tool 消息。多轮对话由你的应用把历史接起来：
+
+```go
+// 每轮的输入 = system + 已存历史 + 本轮 user message
+messages := append([]agent.Message{systemMessage}, stored...)
+messages = append(messages, agent.NewUserMessage(input))
+
+result, err := runner.Run(ctx, agent.RunRequest{Messages: messages})
+if err != nil {
+	return err
+}
+// 只在这一轮真正完成时提交
+if result.Outcome == agent.OutcomeCompleted {
+	stored = append(stored, agent.NewUserMessage(input))
+	stored = append(stored, result.Messages...)
+}
+```
+
+两个容易踩的点：
+
+- **user message 由你保存，不在 `RunResult.Messages` 里**。这是有意的：只有应用知道一轮半途失败的对话该不该留下。
+- **没完成的轮次不要提交**。它的 tool call 还没有对应结果，写进历史会让下一轮的输入不合法。
+
+存到哪里由你决定——内存切片、你自己的表、或者 `message` 子包（带 revision CAS 和分支可见性）。运行时不关心，它只接收 `[]agent.Message`。
+
+完整可运行的例子见 [`examples/chat`](https://github.com/iceymoss/agent-runtime-go/blob/main/examples/chat/main.go)。
+
 ### 让模型按结构输出
 
 答案要交给代码解析而不是给人读时——抽取、分类、路由、填表——只靠 prompt 约束不够：JSON 外面多一句话就把一次成功的运行变成解析错误，而运行时无法修复它。用 `ResponseFormat` 让供应商去强制：

@@ -149,5 +149,6 @@ DEEPSEEK_API_KEY=sk-... go run .
 - 想懂核心类型和执行语义 → [核心概念](concepts.md)
 - 适配器全部选项（本地 Ollama、OpenRouter、非流式降级）→ [providers/openaicompat](packages/openaicompat.md)
 - 核心执行能力（白名单、停止条件、进度观察）→ [agent](packages/agent.md)
-- 多轮会话、持久化、崩溃恢复 → [session](packages/session.md)、[durable](packages/durable.md)
+- 多轮对话怎么接历史、怎么存一轮 → [`examples/chat`](https://github.com/iceymoss/agent-runtime-go/blob/main/examples/chat/main.go) 和 [agent 的「持久化一段对话」](packages/agent.md)
+- 跨进程会话、崩溃恢复 → [session](packages/session.md)、[durable](packages/durable.md)
 - 完整参考应用（权限、SQLite、Skills、MCP、子 Agent）→ [iCoder 教程](icoder.md)

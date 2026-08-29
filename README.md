@@ -308,6 +308,7 @@ See [runtime internals](docs/internals.md) for detailed execution semantics.
 |---|---|
 | [`examples/hello`](examples/hello/main.go) | Minimal model adapter and one run |
 | [`examples/tool-agent`](examples/tool-agent/main.go) | Complete model/tool loop with a facade |
+| [`examples/chat`](examples/chat/main.go) | Multi-turn conversation: carrying history, storing a turn, a tool that reads app state |
 | [`examples/openai-compat`](examples/openai-compat/main.go) | Official adapter with a real model, `NewTool`, and streaming output |
 | [`demo/icoder`](demo/icoder/README.md) | Provider, tools, permissions, sessions, SQLite, Skills, MCP, and Sub-Agent composed together |
 

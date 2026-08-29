@@ -308,6 +308,7 @@ validate response <- aggregate one model step
 |---|---|
 | [`examples/hello`](examples/hello/main.go) | 最小 Model adapter 和一次运行 |
 | [`examples/tool-agent`](examples/tool-agent/main.go) | 完整 model/tool loop 和 facade |
+| [`examples/chat`](examples/chat/main.go) | 多轮对话：历史怎么接、一轮怎么存、工具怎么读应用状态 |
 | [`examples/openai-compat`](examples/openai-compat/main.go) | 官方适配器接真实模型 + `NewTool` + 流式输出 |
 | [`demo/icoder`](demo/icoder/README.md) | Provider、工具、权限、Session、SQLite、Skills、MCP、Sub-Agent 的综合封装 |
 

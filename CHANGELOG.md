@@ -10,6 +10,20 @@ While the project is at `v0.x`, minor versions may contain breaking changes.
 
 ### Added
 
+- `examples/chat`: a multi-turn conversation with a tool and persisted history -
+  the program most people write second, and the one the repository was missing
+  between a 55-line hello and a 12,500-line reference application. The docs gain
+  a matching "Persisting a conversation" section explaining what the application
+  stores and why a turn that did not complete must not be committed.
+- A test that fails when the library declares something no code in the
+  repository ever mentions. Capability flags nothing read, a persistence port
+  nothing called, a stream consumer nothing invoked, and a conformance suite
+  nothing ran were not four incidents but one: nothing proved a declaration was
+  reachable from a real path. The 54 cases that already existed are frozen in a
+  baseline that may only shrink, and a baseline entry that gains a test - or
+  stops existing - fails the test too, so the list cannot rot into a rubber
+  stamp. Clearing the first slice gave every documented `providers/openaicompat`
+  option its first test.
 - `providers/retry`: wraps any `agent.Model` so transient upstream failures are
   retried. The obvious implementation - wrapping what `Stream()` returns -
   retries almost nothing, because an SSE request usually succeeds and then fails
@@ -128,6 +142,21 @@ While the project is at `v0.x`, minor versions may contain breaking changes.
 
 ### Removed
 
+- **BREAKING** `agent.Store`, `agent.SessionStore`, `agent.MessageStore`,
+  `agent.MemoryStore`, `agent.Session`, `agent.SessionStatus` (and its
+  constants), and `agent.ErrSessionNotFound`.
+  Nothing in the library called any of them - not `Agent.Run`, not a subpackage,
+  not an example, not the demo - so implementing the interfaces produced no
+  behavior, and their `uint` identity contradicted the string keys used
+  everywhere else. They were an earlier design the `message` and `session`
+  subpackages superseded, left in place where a newcomer looking for
+  "how do I persist a conversation" would find them and take a wrong turn.
+  **Migration:** the runtime is stateless, so the application joins turns
+  together itself - see the new `examples/chat` and the "Persisting a
+  conversation" section of `docs/packages/agent.md`. For revision CAS and branch
+  visibility use the `message` subpackage; for the session aggregate use
+  `session`. Anyone using `agent.MemoryStore` as a standalone container can
+  replace it with a slice, since the runtime never read from it.
 - **BREAKING** `agent.Capabilities.Media`. Nothing in the library read it, and
   what it would have meant is already covered by `ImageInput`, which is checked.
   **Migration:** delete the field from adapter capability literals.

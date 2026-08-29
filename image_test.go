@@ -93,29 +93,24 @@ func TestImageTextOrderJSONRoundTripAndDigest(t *testing.T) {
 	}
 }
 
-func TestMemoryStoreDeepCopiesImageBytes(t *testing.T) {
-	store := NewMemoryStore()
-	session := Session{ID: 1, UserID: 1, AgentKey: "agent", Status: SessionActive}
-	if err := store.CreateSession(context.Background(), session); err != nil {
-		t.Fatal(err)
-	}
+// TestCloneMessagesDeepCopiesImageBytes covers the property the deleted
+// MemoryStore used to demonstrate: image bytes crossing the runtime boundary are
+// copied, so a caller that mutates what it received cannot reach back into
+// state the runtime still holds.
+func TestCloneMessagesDeepCopiesImageBytes(t *testing.T) {
 	data := []byte{1, 2, 3}
-	message := Message{Role: RoleUser, Parts: []ContentPart{{Type: PartImage, Image: &ImageContent{MediaType: "image/png", Data: data}}}}
-	if err := store.AppendMessages(context.Background(), session.ID, message); err != nil {
-		t.Fatal(err)
-	}
+	original := []Message{{Role: RoleUser, Parts: []ContentPart{
+		{Type: PartImage, Image: &ImageContent{MediaType: "image/png", Data: data}},
+	}}}
+
+	cloned := cloneMessages(original)
 	data[0] = 9
-	first, err := store.ListMessages(context.Background(), session.ID)
-	if err != nil {
-		t.Fatal(err)
+	if got := cloned[0].Parts[0].Image.Data; !reflect.DeepEqual(got, []byte{1, 2, 3}) {
+		t.Fatalf("clone aliased the caller's bytes: %v", got)
 	}
-	first[0].Parts[0].Image.Data[1] = 9
-	second, err := store.ListMessages(context.Background(), session.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := second[0].Parts[0].Image.Data; !reflect.DeepEqual(got, []byte{1, 2, 3}) {
-		t.Fatalf("stored image bytes aliased: %v", got)
+	cloned[0].Parts[0].Image.Data[1] = 9
+	if got := original[0].Parts[0].Image.Data; !reflect.DeepEqual(got, []byte{9, 2, 3}) {
+		t.Fatalf("mutating a clone reached the original: %v", got)
 	}
 }
 

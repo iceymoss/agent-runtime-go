@@ -260,3 +260,33 @@ func validateImagePart(role Role, part ContentPart) error {
 	}
 	return nil
 }
+
+// cloneMessages deep-copies a message slice.
+//
+// Everything the runtime hands across its API boundary is copied, so a caller
+// that mutates what it received cannot reach back into state the runtime is
+// still using - a bug class this package defends against rather than documents.
+func cloneMessages(messages []Message) []Message {
+	cloned := make([]Message, len(messages))
+	for i, message := range messages {
+		cloned[i] = message
+		cloned[i].Parts = make([]ContentPart, len(message.Parts))
+		for j, part := range message.Parts {
+			cloned[i].Parts[j] = part
+			if part.ToolCall != nil {
+				call := *part.ToolCall
+				cloned[i].Parts[j].ToolCall = &call
+			}
+			if part.ToolResult != nil {
+				result := *part.ToolResult
+				cloned[i].Parts[j].ToolResult = &result
+			}
+			if part.Image != nil {
+				image := *part.Image
+				image.Data = append([]byte(nil), part.Image.Data...)
+				cloned[i].Parts[j].Image = &image
+			}
+		}
+	}
+	return cloned
+}
