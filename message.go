@@ -1,7 +1,3 @@
-// Package agent provides provider-neutral messages, models, tools, streaming,
-// and a stateless multi-step model/tool runtime. Applications supply concrete
-// model and tool adapters and may add optional child packages for stateful or
-// durable hosting.
 package agent
 
 import (

@@ -10,6 +10,14 @@ While the project is at `v0.x`, minor versions may contain breaking changes.
 
 ### Added
 
+- A real package overview for the root package, plus runnable `Example`
+  functions for `New`, `NewTool`, and `NewObservationEmitterWith`. godoc lists
+  roughly sixty symbols alphabetically, so a newcomer met `ArtifactVersions`,
+  `Checkpoint`, and `MutationGuard` before `Config` - durable-recovery
+  primitives most applications never touch. The overview says which eight
+  symbols a first agent needs and what problem each remaining group solves, and
+  the examples are verified by `go test`, so the documentation cannot drift away
+  from the code.
 - `examples/chat`: a multi-turn conversation with a tool and persisted history -
   the program most people write second, and the one the repository was missing
   between a 55-line hello and a 12,500-line reference application. The docs gain
