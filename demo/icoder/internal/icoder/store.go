@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/iceymoss/agent-runtime-go"
@@ -406,7 +407,11 @@ func (s *Store) CommitTurn(ctx context.Context, snapshot SessionSnapshot, reques
 	if _, err := tx.ExecContext(ctx, `INSERT INTO icoder_turns(session_id, request_id, input_digest, result_payload) VALUES(?, ?, ?, ?)`, snapshot.ID, requestID, inputDigest, resultPayload); err != nil {
 		return err
 	}
-	payload, err := marshalString(map[string]any{"outcome": result.Outcome, "stop_reason": result.StopReason, "usage": result.Usage, "summary": summarizeRun(result.Messages)})
+	// The run key is the attempt key up to the attempt suffix; recording it lets
+	// the terminal event join the run-scoped facts (context plan, approvals)
+	// written before any attempt existed.
+	runKey, _, _ := strings.Cut(runID, ":attempt:")
+	payload, err := marshalString(map[string]any{"run_key": runKey, "outcome": result.Outcome, "stop_reason": result.StopReason, "usage": result.Usage, "step_usage": stepUsages(result.Steps), "summary": summarizeRun(result.Messages)})
 	if err != nil {
 		return err
 	}

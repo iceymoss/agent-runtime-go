@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/iceymoss/agent-runtime-go"
 	agentcontext "github.com/iceymoss/agent-runtime-go/context"
@@ -47,6 +46,7 @@ type App struct {
 	delegations      *subagent.Service
 	planner          agentcontext.Planner
 	compactor        *agentcontext.Compactor
+	counter          agentcontext.TokenCounter
 	prompt           *prompt.Prompt
 	capabilities     []agent.Message
 	tools            []string
@@ -56,8 +56,6 @@ type App struct {
 	queue            *runQueue
 	runMu            sync.Mutex
 }
-
-type byteCounter struct{}
 
 type sessionState struct {
 	mu sync.RWMutex
@@ -74,38 +72,6 @@ func (s *sessionState) Set(id string) {
 	s.mu.Lock()
 	s.id = id
 	s.mu.Unlock()
-}
-
-func (byteCounter) ID() string { return "icoder/conservative-bytes-v1" }
-func (byteCounter) CountTokens(ctx context.Context, messages []agent.Message) (int, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	tokens := 0
-	for _, message := range messages {
-		tokens += 4 + conservativeTextTokens(string(message.Role)) + conservativeTextTokens(message.Text())
-		for _, call := range message.ToolCalls() {
-			tokens += 6 + conservativeTextTokens(call.ID) + conservativeTextTokens(call.Name) + conservativeTextTokens(call.Input)
-		}
-		for _, result := range message.ToolResults() {
-			tokens += 6 + conservativeTextTokens(result.ToolCallID) + conservativeTextTokens(result.Name) + conservativeTextTokens(result.Content)
-		}
-	}
-	return tokens, nil
-}
-
-func conservativeTextTokens(value string) int {
-	ascii, nonASCII := 0, 0
-	for len(value) > 0 {
-		r, size := utf8.DecodeRuneInString(value)
-		if r == utf8.RuneError && size == 1 || r < utf8.RuneSelf {
-			ascii++
-		} else {
-			nonASCII++
-		}
-		value = value[size:]
-	}
-	return (ascii+3)/4 + nonASCII
 }
 
 func NewApp(ctx context.Context, config Config) (app *App, resultErr error) {
@@ -223,7 +189,12 @@ func NewApp(ctx context.Context, config Config) (app *App, resultErr error) {
 	if err != nil {
 		return nil, err
 	}
-	planner, err := agentcontext.NewPlanner(byteCounter{}, contextPlanStore{store: store})
+	// One counter instance feeds the planner, the compactor, and the
+	// TokenizerID stamped on every plan. Constructing it once keeps the "a plan
+	// verifies only against the counter that produced it" invariant structural
+	// instead of a convention spread across three call sites.
+	counter := agentcontext.TokenCounter(byteCounter{})
+	planner, err := agentcontext.NewPlanner(counter, contextPlanStore{store: store})
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +202,7 @@ func NewApp(ctx context.Context, config Config) (app *App, resultErr error) {
 	if !ok {
 		return nil, fmt.Errorf("model does not support context summarization")
 	}
-	compactor, err := agentcontext.NewCompactor(agentcontext.CompactionOptions{Summarizer: &modelSummarizer{generator: generator, model: config.Model}, Artifacts: contextArtifactStore{store: store}, Counter: byteCounter{}, Clock: time.Now, MinSavings: 64})
+	compactor, err := agentcontext.NewCompactor(agentcontext.CompactionOptions{Summarizer: &modelSummarizer{generator: generator, model: config.Model}, Artifacts: contextArtifactStore{store: store}, Counter: counter, Clock: time.Now, MinSavings: 64})
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +215,7 @@ func NewApp(ctx context.Context, config Config) (app *App, resultErr error) {
 		store: store, durable: store.Durable(), permissions: permissions, catalog: catalog,
 		resolver: resolver, resolved: resolved, systemMessages: []agent.Message{agent.NewSystemMessage(renderedPrompt)},
 		runs: newRunController(), delegations: delegations,
-		planner: planner, compactor: compactor, prompt: basePrompt, capabilities: capabilityMessages,
+		planner: planner, compactor: compactor, counter: counter, prompt: basePrompt, capabilities: capabilityMessages,
 		tools: allowedTools, toolSchemaTokens: toolSchemaTokens, mcp: mcpManager, skills: skillCatalog,
 	}
 	// The queue is assembled after the application because it executes attempts
@@ -343,7 +314,7 @@ func (a *App) prepareInvocation(ctx context.Context, instruction string) (runInv
 	request := agentcontext.PrepareRequest{
 		// Bind the plan to the invocation revision that CommitTurn will publish.
 		Source:           agentcontext.SourceRef{TenantKey: "local", SessionKey: sessionID, SessionRevision: snapshot.Revision + 1},
-		Runtime:          agentcontext.RuntimeArtifacts{DefinitionDigest: runtimeDigest, ProjectionVersion: "openai-chat-completions/v1", TokenizerID: byteCounter{}.ID(), SystemMessages: a.systemMessages, CapabilityMessages: capabilityMessages, ExecutionPolicy: string(policyVersion), ExecutionPolicyDigest: digest([]byte(policyVersion))},
+		Runtime:          agentcontext.RuntimeArtifacts{DefinitionDigest: runtimeDigest, ProjectionVersion: "openai-chat-completions/v1", TokenizerID: a.counter.ID(), SystemMessages: a.systemMessages, CapabilityMessages: capabilityMessages, ExecutionPolicy: string(policyVersion), ExecutionPolicyDigest: digest([]byte(policyVersion))},
 		MainlineMessages: normalized.Messages, InvocationMessages: []agent.Message{agent.NewUserMessage(instruction)},
 		Budget: agentcontext.Budget{ContextTokens: a.config.ContextWindow, ReservedOutputTokens: a.config.MaxTokens, SafetyMarginTokens: 1024, ToolSchemaTokens: a.toolSchemaTokens},
 	}
@@ -362,7 +333,7 @@ func (a *App) prepareInvocation(ctx context.Context, instruction string) (runInv
 		request.Pivot, request.SummaryMessages, request.MainlineMessages = snapshot.Pivot, artifact.Messages(), tail
 		request.Artifacts = []agentcontext.ArtifactRef{artifact.Ref()}
 	}
-	plan, err := a.prepareContext(ctx, snapshot, runtimeDigest, request)
+	plan, err := a.prepareContext(ctx, snapshot, runtimeDigest, runKey, request)
 	if err != nil {
 		return runInvocation{}, err
 	}
@@ -372,15 +343,18 @@ func (a *App) prepareInvocation(ctx context.Context, instruction string) (runInv
 	}, nil
 }
 
-func (a *App) prepareContext(ctx context.Context, snapshot SessionSnapshot, runtimeDigest string, request agentcontext.PrepareRequest) (agentcontext.Plan, error) {
+func (a *App) prepareContext(ctx context.Context, snapshot SessionSnapshot, runtimeDigest, runKey string, request agentcontext.PrepareRequest) (agentcontext.Plan, error) {
 	plan, err := a.planner.Prepare(ctx, request)
+	if err == nil {
+		return plan, a.recordContextPrepared(ctx, snapshot.ID, runKey, plan, request.Budget, nil)
+	}
 	if !errors.Is(err, agentcontext.ErrCompactionRequired) {
 		return plan, err
 	}
 	fixed := append([]agent.Message(nil), request.Runtime.SystemMessages...)
 	fixed = append(fixed, request.Runtime.CapabilityMessages...)
 	fixed = append(fixed, request.InvocationMessages...)
-	fixedTokens, countErr := (byteCounter{}).CountTokens(ctx, fixed)
+	fixedTokens, countErr := a.counter.CountTokens(ctx, fixed)
 	if countErr != nil {
 		return agentcontext.Plan{}, countErr
 	}
@@ -414,7 +388,33 @@ func (a *App) prepareContext(ctx context.Context, snapshot SessionSnapshot, runt
 	if err := a.store.SavePivot(ctx, snapshot, compacted.Pivot); err != nil {
 		return agentcontext.Plan{}, err
 	}
-	return plan, nil
+	return plan, a.recordContextPrepared(ctx, snapshot.ID, runKey, plan, request.Budget, &compacted.Pivot)
+}
+
+// recordContextPrepared persists what the context planner decided for one run:
+// the plan identity, the token estimate against the budget, whether compaction
+// ran, and any normalization repairs. It is a reliable event rather than an
+// Observation because the estimate is only useful when it can be compared with
+// the actual usage the run later reports, and Observations are lossy while the
+// terminal usage event is not. `icoder context show` joins the two.
+func (a *App) recordContextPrepared(ctx context.Context, sessionID, runKey string, plan agentcontext.Plan, budget agentcontext.Budget, pivot *agentcontext.PivotRef) error {
+	payload := map[string]any{
+		"run_key":          runKey,
+		"plan_digest":      plan.Ref().PlanDigest,
+		"session_revision": plan.Ref().SessionRevision,
+		"tokenizer_id":     plan.TokenizerID(),
+		"estimate":         plan.Estimate(),
+		"budget":           budget,
+		"input_limit":      budget.InputLimit(),
+		"compacted":        pivot != nil,
+	}
+	if pivot != nil {
+		payload["covered_through"] = pivot.CoveredThrough
+	}
+	if diagnostics := plan.Diagnostics(); len(diagnostics) > 0 {
+		payload["diagnostics"] = diagnostics
+	}
+	return a.store.AppendRunEvent(ctx, sessionID, runKey+":context", "agent.context.prepared", payload)
 }
 
 func (a *App) Events(ctx context.Context, after uint64) ([]string, error) {

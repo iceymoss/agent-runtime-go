@@ -71,6 +71,7 @@ func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	root.AddCommand(newEvalCommand(opts, stdout))
 	root.AddCommand(newSessionCommand(opts, stdout, stderr))
 	root.AddCommand(newEventsCommand(opts, stdout, stderr))
+	root.AddCommand(newContextCommand(opts, stdout, stderr))
 	root.AddCommand(newRunsCommand(opts, stdout, stderr))
 	root.AddCommand(newDelegationsCommand(opts, stdout, stderr))
 	root.AddCommand(newQueueCommand(opts, stdout, stderr))
@@ -209,6 +210,58 @@ func newEventsCommand(opts *options, stdout, stderr io.Writer) *cobra.Command {
 			return nil
 		})
 	}}
+}
+
+// newContextCommand exposes the context planner's decisions next to what the
+// provider actually charged, per run. The pairing is the point: the estimate
+// alone cannot say whether the conservative tokenizer is close enough, and the
+// usage alone cannot say what the planner believed when it built the request.
+func newContextCommand(opts *options, stdout, stderr io.Writer) *cobra.Command {
+	parent := &cobra.Command{Use: "context", Short: "Inspect context planning against actual usage"}
+	limit := 5
+	show := &cobra.Command{Use: "show", Short: "Show recent runs' context plans, estimates, and actual token usage", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		return withApp(cmd.Context(), opts.config, stderr, func(app *icoder.App) error {
+			reports, err := app.ContextReports(cmd.Context(), limit)
+			if err != nil {
+				return err
+			}
+			if opts.json {
+				return writeJSON(stdout, reports)
+			}
+			if len(reports) == 0 {
+				fmt.Fprintln(stdout, "no context plans recorded for this session")
+				return nil
+			}
+			for _, report := range reports {
+				outcome := report.Outcome
+				if outcome == "" {
+					outcome = "planned"
+				}
+				fmt.Fprintf(stdout, "%s  revision=%d  outcome=%s", report.RunKey, report.SessionRevision, outcome)
+				if report.StopReason != "" {
+					fmt.Fprintf(stdout, "  stop=%s", report.StopReason)
+				}
+				fmt.Fprintln(stdout)
+				fmt.Fprintf(stdout, "  tokenizer=%s compacted=%v diagnostics=%d\n", report.TokenizerID, report.Compacted, len(report.Diagnostics))
+				fmt.Fprintf(stdout, "  estimated input %d tokens (messages=%d tools=%d) of limit %d\n", report.Estimate.TotalInputTokens, report.Estimate.MessageTokens, report.Estimate.ToolSchemaTokens, report.InputLimit)
+				if len(report.StepPromptTokens) > 0 {
+					actual := report.StepPromptTokens[0]
+					line := fmt.Sprintf("  actual first-step prompt %d tokens", actual)
+					if actual > 0 {
+						line += fmt.Sprintf(" (estimate %.1fx actual)", float64(report.Estimate.TotalInputTokens)/float64(actual))
+					}
+					fmt.Fprintln(stdout, line)
+					if len(report.StepPromptTokens) > 1 {
+						fmt.Fprintf(stdout, "  per-step prompt tokens %v\n", report.StepPromptTokens)
+					}
+				}
+			}
+			return nil
+		})
+	}}
+	show.Flags().IntVar(&limit, "limit", limit, "maximum number of runs to report, newest first")
+	parent.AddCommand(show)
+	return parent
 }
 
 func newToolsCommand(opts *options, stdout, stderr io.Writer) *cobra.Command {
