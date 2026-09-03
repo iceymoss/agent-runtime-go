@@ -243,7 +243,7 @@ agent-runtime-go
 
 The application persists the current user message and `RunResult.Messages`. The root `Agent` holds no session state and can be shared concurrently across requests.
 
-See the [Quickstart](docs/quickstart.md) for the full walkthrough, and [`demo/icoder`](demo/icoder/README.md) for a runnable code-agent reference application.
+See [Build your agent](docs/en/guide/index.md) for the full walkthrough, and [`demo/icoder`](demo/icoder/README.md) for a runnable code-agent reference application.
 
 ## Choosing subpackages
 
@@ -316,7 +316,7 @@ See [runtime internals](docs/internals.md) for detailed execution semantics.
 
 Docs are bilingual. English: [docs/en](docs/en/README.md). Chinese (default site locale): [docs](docs/README.md).
 
-- Getting started: [Quickstart](docs/en/quickstart.md) · [Core concepts](docs/en/concepts.md)
+- Getting started: [Build your agent](docs/en/guide/index.md) · [Core concepts](docs/en/concepts.md)
 - Package guides (one document per package): see [`docs/en/packages/`](docs/en/packages/), starting with the [root package](docs/en/packages/agent.md) and [providers/openaicompat](docs/en/packages/openaicompat.md)
 - Advanced: [Runtime internals](docs/en/internals.md) · [Production patterns](docs/en/production.md) · [iCoder tutorial](docs/en/icoder.md) · [Reference](docs/en/reference.md)
 

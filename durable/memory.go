@@ -2,6 +2,7 @@ package durable
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"sort"
 	"sync"
@@ -336,7 +337,14 @@ func (m *MemoryStore) BeginEffect(ctx context.Context, guard Guard, key Executio
 		return cloneEffect(record), nil
 	}
 	if record.Status != EffectPrepared {
-		return EffectRecord{}, durableError(ErrInvalidTransition, "begin effect", guard.RunKey, "effect is not prepared")
+		// The common way to land here is a tool that suspended: its effect stays
+		// running under the fence of the attempt that parked it, and the resumed
+		// attempt holds a newer one. A tool that can suspend must either declare
+		// agent.ToolExecutionLifecycleOwner, so the runtime opens no effect
+		// boundary around it, or run through the tool subpackage's executor,
+		// which parks and re-arms the effect itself.
+		return EffectRecord{}, durableError(ErrInvalidTransition, "begin effect", guard.RunKey,
+			fmt.Sprintf("effect is %s, not prepared; a suspending tool must own its execution lifecycle or use the tool subpackage's executor", record.Status))
 	}
 	record.Status, record.FenceToken, record.StartedAt = EffectRunning, guard.FenceToken, startedAt
 	m.effects[key] = record

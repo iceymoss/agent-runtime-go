@@ -23,11 +23,26 @@ const packageNames = [
   "agenttest",
 ] as const;
 
+const guidePages = [
+  "index",
+  "01-first-run",
+  "02-tools",
+  "03-real-model",
+  "04-conversation",
+  "05-streaming",
+  "06-structured-output",
+  "07-permission",
+  "08-tool-sources",
+  "09-durability",
+  "10-orchestration",
+  "11-production",
+  "12-testing",
+] as const;
+
 function buildRewrites(prefix = "") {
   const p = prefix ? `${prefix}/` : "";
   const rewrites: Record<string, string> = {
     [`${p}README.md`]: `${p}index.md`,
-    [`${p}quickstart.md`]: `${p}docs/quickstart.md`,
     [`${p}concepts.md`]: `${p}docs/concepts.md`,
     [`${p}internals.md`]: `${p}docs/internals.md`,
     [`${p}production.md`]: `${p}docs/production.md`,
@@ -37,6 +52,9 @@ function buildRewrites(prefix = "") {
   for (const name of packageNames) {
     rewrites[`${p}packages/${name}.md`] = `${p}docs/packages/${name}.md`;
   }
+  for (const name of guidePages) {
+    rewrites[`${p}guide/${name}.md`] = `${p}docs/guide/${name}.md`;
+  }
   return rewrites;
 }
 
@@ -45,8 +63,25 @@ const zhSidebar: DefaultTheme.Sidebar = [
     text: "入门",
     items: [
       { text: "介绍", link: "/" },
-      { text: "快速开始", link: "/docs/quickstart" },
       { text: "核心概念", link: "/docs/concepts" },
+    ],
+  },
+  {
+    text: "构建你的 Agent",
+    items: [
+      { text: "总览", link: "/docs/guide/" },
+      { text: "1. 从一次调用开始", link: "/docs/guide/01-first-run" },
+      { text: "2. 让模型调用你的代码", link: "/docs/guide/02-tools" },
+      { text: "3. 接上真实模型", link: "/docs/guide/03-real-model" },
+      { text: "4. 多轮对话与上下文", link: "/docs/guide/04-conversation" },
+      { text: "5. 把过程给用户看", link: "/docs/guide/05-streaming" },
+      { text: "6. 让输出能被代码消费", link: "/docs/guide/06-structured-output" },
+      { text: "7. 危险操作要问人", link: "/docs/guide/07-permission" },
+      { text: "8. 扩展工具来源", link: "/docs/guide/08-tool-sources" },
+      { text: "9. 崩溃了还能接着跑", link: "/docs/guide/09-durability" },
+      { text: "10. 多 Agent 与可复现", link: "/docs/guide/10-orchestration" },
+      { text: "11. 上生产", link: "/docs/guide/11-production" },
+      { text: "12. 测试你写的适配器", link: "/docs/guide/12-testing" },
     ],
   },
   {
@@ -112,8 +147,25 @@ const enSidebar: DefaultTheme.Sidebar = [
     text: "Getting started",
     items: [
       { text: "Introduction", link: "/en/" },
-      { text: "Quickstart", link: "/en/docs/quickstart" },
       { text: "Core concepts", link: "/en/docs/concepts" },
+    ],
+  },
+  {
+    text: "Build your agent",
+    items: [
+      { text: "Overview", link: "/en/docs/guide/" },
+      { text: "1. Your first run", link: "/en/docs/guide/01-first-run" },
+      { text: "2. Letting the model call your code", link: "/en/docs/guide/02-tools" },
+      { text: "3. Connecting a real model", link: "/en/docs/guide/03-real-model" },
+      { text: "4. Conversation and context", link: "/en/docs/guide/04-conversation" },
+      { text: "5. Showing progress", link: "/en/docs/guide/05-streaming" },
+      { text: "6. Output your code can consume", link: "/en/docs/guide/06-structured-output" },
+      { text: "7. Asking a human first", link: "/en/docs/guide/07-permission" },
+      { text: "8. More sources of tools", link: "/en/docs/guide/08-tool-sources" },
+      { text: "9. Surviving a crash", link: "/en/docs/guide/09-durability" },
+      { text: "10. Many agents, reproducibly", link: "/en/docs/guide/10-orchestration" },
+      { text: "11. Going to production", link: "/en/docs/guide/11-production" },
+      { text: "12. Testing your adapter", link: "/en/docs/guide/12-testing" },
     ],
   },
   {
@@ -215,7 +267,7 @@ export default withMermaid(
           siteTitle: "Agent Runtime for Go",
           logo: { src: "/logo.svg", alt: "" },
           nav: [
-            { text: "指南", link: "/docs/quickstart", activeMatch: "^/docs/(quickstart|concepts|internals|production|icoder)" },
+            { text: "指南", link: "/docs/guide/", activeMatch: "^/docs/(guide|concepts|internals|production|icoder)" },
             { text: "包参考", link: "/docs/packages/agent", activeMatch: "^/docs/packages/" },
             { text: "速查表", link: "/docs/reference" },
           ],
@@ -257,7 +309,7 @@ export default withMermaid(
           siteTitle: "Agent Runtime for Go",
           logo: { src: "/logo.svg", alt: "" },
           nav: [
-            { text: "Guide", link: "/en/docs/quickstart", activeMatch: "^/en/docs/(quickstart|concepts|internals|production|icoder)" },
+            { text: "Guide", link: "/en/docs/guide/", activeMatch: "^/en/docs/(guide|concepts|internals|production|icoder)" },
             { text: "Packages", link: "/en/docs/packages/agent", activeMatch: "^/en/docs/packages/" },
             { text: "Reference", link: "/en/docs/reference" },
           ],
