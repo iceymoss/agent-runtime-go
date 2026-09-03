@@ -215,9 +215,9 @@
 - [x] 精确 runtime generation 可以被重建和审计（`icoder runtime show/list/verify`）。
 - [x] turn、revision、messages、usage 和 event/outbox 原子提交。
 - [x] 中断运行可以安全 reconcile 或明确进入人工处理状态（`icoder runs list/effects/approve/deny/abandon`）。
-- 文档能指导另一个项目复用同一组合方式。
+- [x] 文档能指导另一个项目复用同一组合方式：`docs/guide/`（中英 12 章 developer guide）+ 可运行的 `examples/guide`，从 hello 到 durability/编排/生产逐章对应真实 API。
 
-当前状态：RuntimeDefinition + coordinator + daemon 生命周期、SessionAgent 队列与全部 SQLite adapters 完成；剩余验收项是「文档能指导另一个项目复用同一组合方式」（developer guide 在 `docs/developer-guide` 分支推进）。
+当前状态：M5 完成。RuntimeDefinition + coordinator + daemon 生命周期、SessionAgent 队列、全部 SQLite adapters 与 developer guide 均已落地。
 
 ## 6. 首轮实施范围
 
