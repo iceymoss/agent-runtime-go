@@ -2,6 +2,7 @@ package icoder
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -128,11 +129,11 @@ func TestPrepareContextCompactsAndPublishesPivot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app := &App{planner: planner, compactor: compactor, store: store}
+	app := &App{planner: planner, compactor: compactor, counter: byteCounter{}, store: store}
 	request := contextPrepareRequest("session", snapshot.Revision+1, "next task")
 	request.MainlineMessages = history
 	request.Budget = agentcontext.Budget{ContextTokens: 300, ReservedOutputTokens: 20, SafetyMarginTokens: 10}
-	plan, err := app.prepareContext(ctx, snapshot, "runtime", request)
+	plan, err := app.prepareContext(ctx, snapshot, "runtime", "run-compaction", request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,5 +147,25 @@ func TestPrepareContextCompactsAndPublishesPivot(t *testing.T) {
 	tail, err := store.MessagesAfterRevision(ctx, "session", loaded.Pivot.CoveredThrough)
 	if err != nil || len(tail) != 2 || tail[0].Text() != "latest turn" {
 		t.Fatalf("tail = %#v, %v", tail, err)
+	}
+	events, err := store.ReplayEvents(ctx, "session", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prepared *contextPreparedPayload
+	for _, envelope := range events {
+		if envelope.Type != "agent.context.prepared" {
+			continue
+		}
+		prepared = &contextPreparedPayload{}
+		if err := json.Unmarshal(envelope.Payload, prepared); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if prepared == nil || prepared.RunKey != "run-compaction" || !prepared.Compacted || prepared.CoveredThrough != 2 {
+		t.Fatalf("prepared event = %#v", prepared)
+	}
+	if prepared.PlanDigest != plan.Ref().PlanDigest || prepared.Estimate != plan.Estimate() {
+		t.Fatalf("prepared event = %#v, plan = %#v", prepared, plan.Ref())
 	}
 }

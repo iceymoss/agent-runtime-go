@@ -134,7 +134,7 @@
 - 长历史压缩后保留最新用户意图、关键事实和完整近期工具交换。
 - 进程重启后能够恢复 summary artifact 和任务状态。
 
-当前状态：持久化 context 主体完成；provider tokenizer 和动态 tool schema token 预算仍待实现。
+当前状态：持久化 context 与动态 tool schema token 预算完成。context 诊断已落地：`agent.context.prepared` 事件持久化每次 run 的 plan digest、估算、预算与 compaction 事实，terminal 事件携带每步真实 prompt token，`icoder context show` 输出估算与实际的对照。provider 精确 tokenizer 保留为可插拔升级：counter 是 App 装配时的单一 `TokenCounter` 值，诊断报告负责提供何时值得替换它的证据。
 
 ### M3：可靠运行和事件
 
@@ -190,7 +190,7 @@
 ## 5.1 下一阶段顺序
 
 1. [x] 回补 M0 deterministic coding eval harness，建立功能成功率和安全回归基线。
-2. 根据 eval 结果完成 provider tokenizer、动态 tool schema budget 和 context diagnostics。
+2. [x] 动态 tool schema budget 与 context diagnostics 完成（`agent.context.prepared` + `step_usage` + `icoder context show`）；provider tokenizer 保留为可插拔升级，由诊断数据决定是否引入。
 3. [x] 将进程内事件升级为事务 outbox，补齐 model step 和恢复投影。
 4. [x] 设计并实现 root Agent 到高级 `tool.Executor` 的标准 bridge（`tool.NewAgentRegistry` + iCoder `ToolCatalog`）。
 5. [x] 迁移到 RuntimeDefinition（coordinator resolve + manifest）；context-aware SessionAgent AttemptRunner 待办。
@@ -204,9 +204,9 @@
 任务：
 
 - [x] 使用 RuntimeDefinition 冻结 model、prompt、tools、policy、Skills 和 MCP generation，并通过 `coordinator` 持久化 wire manifest、支持精确重建。
-- 通过 SessionAgent 和 context-aware AttemptRunner 运行任务。
+- [x] 通过 SessionAgent 和 context-aware AttemptRunner 运行任务：`icoder queue` 在提交时绑定 context plan，worker 按提交时的历史执行。
 - [x] SQLite adapters：`durable.Store`/`ExecutionLedger`/`UsageLedger`、`tool.ExecutionLedger`、`permission.Store`、`coordinator.ManifestStore`、`event` outbox、context plan/artifact。
-- 仍缺 SQLite adapters：`message.Service`、`session.Service` + `session.Store`。两者的状态机校验（transition、branch correlation、ordinal、limits）都在库内非导出逻辑里，应用侧复刻有漂移风险；建议先在库里导出可复用的校验入口，再写适配器。
+- [x] `SQLiteMessageService`（`message.Service`）与 `SQLiteSessionService` + `SQLiteSessionRunStore`（`session.Service` + `session.Store`）已实现；状态机校验入口已由库导出，适配器只做存储并通过 `agenttest` 对应套件验收。
 - [x] 明确跨 aggregate 事务和 outbox 边界：turn、messages、usage、terminal event 与 durable 终态在同一个 SQLite 事务提交。
 - [x] 增加 daemon 生命周期、readiness 和 bounded shutdown 示例（`icoder daemon`）。
 
@@ -217,7 +217,7 @@
 - [x] 中断运行可以安全 reconcile 或明确进入人工处理状态（`icoder runs list/effects/approve/deny/abandon`）。
 - 文档能指导另一个项目复用同一组合方式。
 
-当前状态：RuntimeDefinition + coordinator + daemon 生命周期完成；SessionAgent 与 `message` 聚合待办。
+当前状态：RuntimeDefinition + coordinator + daemon 生命周期、SessionAgent 队列与全部 SQLite adapters 完成；剩余验收项是「文档能指导另一个项目复用同一组合方式」（developer guide 在 `docs/developer-guide` 分支推进）。
 
 ## 6. 首轮实施范围
 

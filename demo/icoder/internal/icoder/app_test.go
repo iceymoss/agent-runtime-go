@@ -142,8 +142,26 @@ func TestAppRunsToolLoopAndCommitsTurn(t *testing.T) {
 		t.Fatalf("stored session = %#v, history = %#v", snapshot, history)
 	}
 	events, err := app.store.ReplayEvents(context.Background(), "integration", 0, 10)
-	if err != nil || len(events) != 5 || events[0].Type != "agent.run.started" || events[1].Type != "agent.permission.checked" || events[2].Type != "agent.tool.started" || events[3].Type != "agent.tool.completed" || events[4].Type != "agent.run.completed" {
+	if err != nil || len(events) != 6 || events[0].Type != "agent.context.prepared" || events[1].Type != "agent.run.started" || events[2].Type != "agent.permission.checked" || events[3].Type != "agent.tool.started" || events[4].Type != "agent.tool.completed" || events[5].Type != "agent.run.completed" {
 		t.Fatalf("events = %#v, error = %v", events, err)
+	}
+
+	reports, err := app.ContextReports(context.Background(), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("context reports = %#v", reports)
+	}
+	report := reports[0]
+	if report.TokenizerID != "icoder/conservative-bytes-v1" || report.Compacted || report.Estimate.TotalInputTokens <= 0 || report.InputLimit <= 0 {
+		t.Fatalf("context report plan side = %#v", report)
+	}
+	if report.Outcome != "completed" || report.StopReason != string(agent.StopReasonComplete) || report.Usage == nil || report.Usage.TotalTokens != 19 {
+		t.Fatalf("context report outcome side = %#v", report)
+	}
+	if len(report.StepPromptTokens) != 2 || report.StepPromptTokens[0] != 5 || report.StepPromptTokens[1] != 8 {
+		t.Fatalf("context report step prompt tokens = %#v", report.StepPromptTokens)
 	}
 }
 
@@ -203,7 +221,7 @@ func TestAppPersistsFailedRunTerminalEvent(t *testing.T) {
 		t.Fatal("Run() returned no error")
 	}
 	events, err := app.store.ReplayEvents(context.Background(), "failed-run", 0, 10)
-	if err != nil || len(events) != 2 || events[0].Type != "agent.run.started" || events[1].Type != "agent.run.failed" {
+	if err != nil || len(events) != 3 || events[0].Type != "agent.context.prepared" || events[1].Type != "agent.run.started" || events[2].Type != "agent.run.failed" {
 		t.Fatalf("ReplayEvents() = %#v, %v", events, err)
 	}
 }
@@ -279,11 +297,11 @@ func TestAppDispatchOutboxDeliversPendingEvents(t *testing.T) {
 	}
 	publisher := &recordingPublisher{}
 	stats, err := app.DispatchOutbox(context.Background(), publisher, 10)
-	if err != nil || stats.Claimed != 2 || stats.Delivered != 2 || len(publisher.events) != 2 {
+	if err != nil || stats.Claimed != 3 || stats.Delivered != 3 || len(publisher.events) != 3 {
 		t.Fatalf("DispatchOutbox() = %#v, events = %#v, error = %v", stats, publisher.events, err)
 	}
 	stats, err = app.DispatchOutbox(context.Background(), publisher, 10)
-	if err != nil || stats.Claimed != 0 || len(publisher.events) != 2 {
+	if err != nil || stats.Claimed != 0 || len(publisher.events) != 3 {
 		t.Fatalf("second DispatchOutbox() = %#v, events = %#v, error = %v", stats, publisher.events, err)
 	}
 }

@@ -102,6 +102,7 @@ icoder session list            列出会话
 icoder session history         查看当前会话历史
 icoder session clear           清空当前会话
 icoder events                  回放当前会话 terminal events
+icoder context show            对比最近各 run 的 context 计划估算与真实 token 用量
 icoder runs list               列出挂起或未完成的 durable run
 icoder runs effects <run-key>  查看某次 run 的工具副作用台账
 icoder runs approve <run-key>  批准挂起的工具调用并继续该 run
@@ -251,6 +252,20 @@ child 关系状态机落在 SQLite（`SQLiteSubagentStore` 实现 `subagent.Stor
 适配器只负责存储真正拥有的部分——找到 parent、数兄弟、原子写入；depth / fanout / 环检测 / 预算算术全部调用 `subagent` 包导出的状态机（`ValidateDepth`、`ValidateFanout`、`ValidateNoCycle`、`BudgetSnapshot.Reserve/Settle`）。这些是安全限额而不是记账：适配器自己重写一份不会大声报错，只会悄悄放宽一个调用方从未授权的深度、宽度或花费。`agenttest.TestSubagentStore` 把这个适配器和库自带参考实现按同一份契约验收。
 
 `icoder runs list` 会把等待 child 的运行显示为 `awaiting-delegate` 而不是 `awaiting-approval`——它需要的是有人推进工作，不是有人做决定；`icoder runs resume` 会先推进 child 再恢复父运行。
+
+## Context 诊断
+
+每次 run 在准入时都会把 context planner 的决定写成一条可靠事件（`agent.context.prepared`）：plan digest、token 估算、预算与输入上限、是否触发了 compaction、以及历史规范化的修复记录。run 结束时的 terminal 事件则带上每一步真实的 prompt token（`step_usage`）。`icoder context show` 把两边按 run 连起来：
+
+```bash
+./icoder context show --limit 5
+# sha256:...:d41f  revision=4  outcome=completed  stop=complete
+#   tokenizer=icoder/conservative-bytes-v1 compacted=false diagnostics=0
+#   estimated input 2143 tokens (messages=476 tools=1667) of limit 122880
+#   actual first-step prompt 1010 tokens (estimate 2.1x actual)
+```
+
+对比的锚点是**第一步**的 prompt token——只有第一步是按计划的 context 发出的，后续步骤会随工具结果增长。iCoder 的估算器故意保守（宁可提前 compaction，也不发出会被 provider 拒绝的请求）；这份报告存在的意义就是量化保守程度：如果估算长期偏离到影响 context 利用率,数据会指向换一个 provider 精确 tokenizer——它是 App 装配时的单一 `TokenCounter` 值,换实现不需要动任何调用点。
 
 ## 持久化的运行队列
 

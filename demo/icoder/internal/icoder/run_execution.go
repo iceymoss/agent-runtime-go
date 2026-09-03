@@ -222,6 +222,7 @@ func (a *App) finalizeFailure(ctx context.Context, invocation runInvocation, att
 	payload := map[string]any{"error": runErr.Error(), "run_key": invocation.runKey}
 	if result != nil {
 		payload["outcome"], payload["stop_reason"], payload["usage"] = result.Outcome, result.StopReason, result.Usage
+		payload["step_usage"] = stepUsages(result.Steps)
 		if result.DurableFailure != nil {
 			if _, err := adapter.Fail(cleanup, result.DurableFailure.Guard, result.DurableFailure.Checkpoint, result.DurableFailure.Failure); err != nil {
 				payload["finalize_error"] = err.Error()
@@ -237,7 +238,7 @@ func (a *App) finalizeFailure(ctx context.Context, invocation runInvocation, att
 // recordSuspension publishes the fact that a run is parked on an approval, with
 // the run key a human needs to resume it.
 func (a *App) recordSuspension(ctx context.Context, invocation runInvocation, attemptKey string, result *agent.RunResult) error {
-	payload := map[string]any{"run_key": invocation.runKey, "stop_reason": result.StopReason, "usage": result.Usage}
+	payload := map[string]any{"run_key": invocation.runKey, "stop_reason": result.StopReason, "usage": result.Usage, "step_usage": stepUsages(result.Steps)}
 	if result.Suspension != nil && result.Suspension.Tool != nil {
 		payload["execution_key"] = result.Suspension.Tool.ExecutionKey
 		payload["request_ref"] = result.Suspension.Tool.RequestRef
