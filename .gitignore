@@ -8,3 +8,4 @@
 /demo/icoder/.icoder.db-shm
 /demo/icoder/.icoder.db-wal
 .DS_Store
+/guide
